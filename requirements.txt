@@ -1,0 +1,42 @@
+# Core dependencies
+pyautogui>=0.9.54
+mss>=7.0.1
+opencv-python>=4.7.0
+numpy>=1.24.0
+Pillow>=9.5.0
+pynput>=1.7.6
+PyQt5>=5.15.0
+PyQt5-sip>=12.8.0
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-qt>=4.0.0
+
+# Utilities
+colorlog>=6.7.0
+psutil>=5.9.0
+tqdm>=4.65.0
+matplotlib>=3.7.0
+scikit-learn>=1.2.2  # For adaptive algorithms
+scipy>=1.10.1  # For advanced math functions
+
+# Machine Learning dependencies
+# Uncomment the appropriate line based on your system
+# torch>=2.0.0  # PyTorch CPU
+# torch>=2.0.0+cu118  # PyTorch with CUDA 11.8
+onnx>=1.14.0
+onnxruntime>=1.15.0
+
+# Enhanced humanization dependencies
+# bezier has no wheels for Python 3.13 yet; keep it for <=3.12 only
+bezier>=2023.7.28; python_version < "3.13"  # For advanced Bezier curve calculations
+keyboard>=0.13.5  # For advanced keyboard control
+pyperclip>=1.8.2  # For clipboard operations in humanized typing
+
+# Enhanced adaptive detection dependencies
+scikit-image>=0.20.0  # For advanced image processing
+imutils>=0.5.4  # For image manipulation utilities
+
+# Optional dependencies for training
+# tensorflow>=2.12.0  # TensorFlow (optional)
