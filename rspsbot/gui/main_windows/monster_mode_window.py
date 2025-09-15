@@ -19,9 +19,10 @@ from rspsbot.gui.panels.teleport_panel import TeleportPanel
 from rspsbot.gui.panels.potion_panel import PotionPanel
 
 class MonsterModeWindow(QMainWindow):
-    def __init__(self, config):
+    def __init__(self, config_manager, bot_controller):
         super().__init__()
-        self.config = config
+        self.config_manager = config_manager
+        self.bot_controller = bot_controller
         self.init_ui()
         
     def init_ui(self):
@@ -32,14 +33,14 @@ class MonsterModeWindow(QMainWindow):
         tab_widget = QTabWidget()
         
         # Add panels as tabs
-        tab_widget.addTab(MonsterPanel(self.config), "Monster Settings")
-        tab_widget.addTab(CombatPanel(self.config), "Combat Settings")
-        tab_widget.addTab(ControlPanel(self.config), "Control Settings")
-        tab_widget.addTab(PotionPanel(self.config), "Potion Settings")
-        tab_widget.addTab(TeleportPanel(self.config), "Teleport Settings")
-        tab_widget.addTab(ProfilesPanel(self.config), "Profiles")
-        tab_widget.addTab(LogsPanel(self.config), "Logs")
-        tab_widget.addTab(StatsPanel(self.config), "Statistics")
+        tab_widget.addTab(MonsterPanel(self.config_manager), "Monster Settings")
+        tab_widget.addTab(CombatPanel(self.config_manager, self.bot_controller), "Combat Settings")
+        tab_widget.addTab(ControlPanel(self.config_manager, self.bot_controller), "Control Settings")
+        tab_widget.addTab(PotionPanel(self.config_manager, self.bot_controller), "Potion Settings")
+        tab_widget.addTab(TeleportPanel(self.config_manager, self.bot_controller), "Teleport Settings")
+        tab_widget.addTab(ProfilesPanel(self.config_manager), "Profiles")
+        tab_widget.addTab(LogsPanel(self.config_manager), "Logs")
+        tab_widget.addTab(StatsPanel(self.config_manager, self.bot_controller), "Statistics")
         
         self.setCentralWidget(tab_widget)
 
@@ -50,6 +51,12 @@ if __name__ == "__main__":
         def __init__(self):
             pass
             
-    window = MonsterModeWindow(DummyConfig())
+    class DummyBotController:
+        def __init__(self):
+            self.teleport_manager = None
+            self.potion_manager = None
+            self.stats_tracker = None
+            
+    window = MonsterModeWindow(DummyConfig(), DummyBotController())
     window.show()
     sys.exit(app.exec_())

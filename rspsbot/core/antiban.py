@@ -30,6 +30,8 @@ class AntiBanManager:
         self.micro_movement_interval = (1.0, 3.0)   # Random interval between micro movements
         self.break_interval = (180.0, 300.0)        # Random interval between breaks
         self.break_duration = (2.0, 8.0)            # Random break duration
+        self.click_variation = 30.0                 # Percentage variation in click timing
+        self.enabled = True                         # Whether anti-ban is enabled
         
         # Load settings from config if available
         if self.config:
@@ -39,6 +41,9 @@ class AntiBanManager:
     
     def _load_settings(self):
         """Load settings from config"""
+        # Check if anti-ban is enabled
+        self.enabled = self.config.get('antiban_enabled', True)
+        
         # Mouse movement settings
         min_move = self.config.get('antiban_mouse_movement_min', 5.0)
         max_move = self.config.get('antiban_mouse_movement_max', 15.0)
@@ -57,6 +62,9 @@ class AntiBanManager:
         min_duration = self.config.get('antiban_break_duration_min', 2.0)
         max_duration = self.config.get('antiban_break_duration_max', 8.0)
         self.break_duration = (min_duration, max_duration)
+        
+        # Click timing variation
+        self.click_variation = self.config.get('antiban_click_variation', 30.0)
     
     def randomize_click_timing(self, base_delay: float = 0.05) -> float:
         """
@@ -68,8 +76,11 @@ class AntiBanManager:
         Returns:
             Randomized delay in seconds
         """
-        # Add random variation (±30%)
-        variation = base_delay * 0.3
+        if not self.enabled:
+            return base_delay
+            
+        # Add random variation based on configured percentage
+        variation = base_delay * (self.click_variation / 100.0)
         return base_delay + random.uniform(-variation, variation)
     
     def randomize_movement(self, 
@@ -140,6 +151,9 @@ class AntiBanManager:
         Returns:
             Tuple of (should_break, break_duration)
         """
+        if not self.enabled:
+            return False, 0.0
+            
         now = time.time()
         elapsed = now - self.last_break
         
@@ -161,6 +175,9 @@ class AntiBanManager:
         Returns:
             True if mouse should be moved
         """
+        if not self.enabled:
+            return False
+            
         now = time.time()
         elapsed = now - self.last_mouse_move
         
@@ -190,6 +207,9 @@ class AntiBanManager:
     
     def perform_micro_movement(self) -> None:
         """Perform a small mouse movement"""
+        if not self.enabled:
+            return
+            
         now = time.time()
         elapsed = now - self.last_micro_movement
         

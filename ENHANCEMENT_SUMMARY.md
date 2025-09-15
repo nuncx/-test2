@@ -1,108 +1,154 @@
-# RSPS Color Bot v3 Enhancement Summary
+# RSPS Color Bot v3 - Enhancement Summary
 
-This document provides a comprehensive summary of all enhancements implemented in the RSPS Color Bot v3 project.
+This document provides a comprehensive overview of the enhancements made to the RSPS Color Bot v3.
 
-## 1. File Organization and Modularization
+## 1. Mode Selection System
 
-The codebase has been reorganized to improve maintainability and make future updates easier:
+The bot now features a clear mode selection system with two primary modes:
 
-### New Component Structure
-- Created reusable GUI components:
-  - `TimeSelector`: Component for time input in various formats (min:sec, sec only, hour:min)
-  - `TooltipHelper`: Helper class for consistent tooltip styling
-  - `AdvancedROISelector`: Enhanced ROI selection with preview capability
-  - `EnhancedColorPicker`: RGB sliders with tolerance control and visual preview
+### Monster Mode
+- Full-featured bot mode with monster detection, combat, and all features
+- Supports both single monster and multi-monster configurations
+- Includes combat style selection and weapon detection
 
-### Mode Separation
-- Split the bot into two distinct modes:
-  - **Monster Mode**: For traditional monster detection and combat
-  - **Instance Mode**: For simplified instance management with aggro potions
+### Instance Mode
+- Simplified mode focused on instance management
+- Handles aggro potions and instance teleports
+- Optimized for efficient instance farming
 
-### Window Structure
-- Created mode selection GUI in `run.py`
-- Implemented separate window classes for each mode:
-  - `MonsterModeWindow`: Main window for monster detection mode
-  - `InstanceModeWindow`: Main window for instance mode
+### Instance Only Mode Toggle
+- Added a toggle in the mode selection window
+- When enabled, the bot operates in a simplified manner:
+  - Focuses solely on aggro potion and instance teleport mechanics
+  - Skips tile and monster detection entirely
+  - Automatically detects instance emptiness (no HP bar visible for 20-30 seconds)
+  - Automatically uses aggro potions and teleports to instance when needed
 
-### Package Organization
-- Properly organized package structure with `__init__.py` files
-- Ensured clean separation of concerns between modules
+## 2. Multi-Monster Mode
 
-## 2. Profile Saving Enhancement
+Added support for detecting and fighting multiple monster types:
 
-All GUI variables are now properly saved in profiles:
+### Features
+- Toggle between Single Monster Mode and Multi Monster Mode
+- Configure up to 3 different monsters with individual settings
+- Select combat style (MELEE/RANGED/MAGE) for each monster type
+- Weapon detection system to automatically switch weapons based on monster type
 
-- Added missing variables to the default config:
-  - First aggro potion timer
-  - Aggro visual check
-  - Instance token delay
-  - Instance only mode
-  - Anti-ban settings
+### Combat Styles Settings
+- Dedicated tab for configuring weapon detection
+- ROI selection for weapon area
+- Color configuration for each weapon type (MELEE/RANGED/MAGE)
+- Visual feedback for selected colors and regions
 
-- Ensured all settings are saved when using "Save Profile" or "Save As" functions
+## 3. Enhanced Time Selection
 
-## 3. Bot Mode Selection
+Improved time input across the application:
 
-Implemented a mode selection system:
+### TimeSelector Component
+- Multiple time input formats:
+  - `min_sec`: Minutes and seconds spinboxes
+  - `sec_only`: Seconds spinbox only
+  - `hour_min`: Hours and minutes spinboxes
+  - `min_sec_str`: Minutes:seconds string input (mm:ss)
+  - `hour_min_sec_str`: Hours:minutes:seconds string input (hh:mm:ss)
+- Input validation and formatting
+- Consistent interface across all time inputs
 
-- Added a mode selection window that appears when the bot starts
-- Created separate main windows for each mode
-- Each mode has its own set of panels and settings
-- Maintained backward compatibility with existing functionality
+### First Aggro Potion Timer
+- Added separate timer for first aggro potion
+- Format: minutes:seconds (mm:ss)
+- Configurable independently from regular aggro potion interval
+- Clear visual indication in the UI
 
-## 4. Multi-Monster Mode Implementation
+## 4. Anti-Ban System
 
-Added support for multiple monster detection:
+Implemented sophisticated anti-ban techniques:
 
-- Created monster mode selection (single vs. multi)
-- Implemented UI for selecting up to 3 monsters with tabbed interface
-- Added combat style selection per monster (MELEE/RANGED/MAGE)
-- Created tabbed interface for combat styles settings
-- Implemented weapon detection logic for multi-monster mode
+### Features
+- Click timing randomization (±30% variation by default)
+- Human-like mouse movement patterns using control points
+- Random breaks and micro-movements
+- Configurable parameters for all anti-ban features
 
-## 5. Antiban Logic Implementation
+### Configuration Options
+- Enable/disable anti-ban features
+- Click variation percentage
+- Mouse movement interval range
+- Break interval range
+- Break duration range
 
-Added sophisticated anti-ban techniques:
+## 5. Comprehensive Tooltips
 
-- Created `AntiBanManager` class in `rspsbot/core/antiban.py`
-- Implemented randomization for click timing (±30% variation)
-- Added human-like mouse movement patterns using control points
-- Implemented random breaks and micro-movements
-- Added configuration options for all anti-ban settings
+Added detailed tooltips throughout the application:
 
-## 6. Tooltip Enhancement
+### Implementation
+- Consistent tooltip styling using TooltipHelper class
+- Rich text formatting with titles and descriptions
+- Tooltips for all configuration options explaining their effects
 
-Improved tooltips throughout the application:
+### Coverage
+- All time inputs
+- All color pickers
+- All ROI selectors
+- All checkboxes and radio buttons
+- All spinboxes and sliders
 
-- Created `TooltipHelper` class for consistent tooltip styling
-- Added comprehensive tooltips to all new components
-- Ensured tooltips provide clear explanations of variable effects
+## 6. Enhanced GUI Components
 
-## 7. GUI Optimization
+Created and improved various GUI components:
 
-Made the GUI more compact and user-friendly:
+### TimeSelector
+- Multiple time input formats
+- Consistent interface
+- Input validation
 
-- Created more organized layout with tabbed interfaces
-- Improved component organization with proper grouping
-- Removed unused variables and redundant code
-- Ensured all elements fit properly in the interface
+### AdvancedROISelector
+- Enhanced ROI selection with preview capability
+- Screenshot-based selection
+- Visual feedback
+
+### EnhancedColorPicker
+- RGB sliders with tolerance control
+- Multiple color selection methods:
+  - Screen picker (pipette tool)
+  - Color dialog
+  - File picker
+- Visual color preview
+
+## 7. Profile Saving Enhancement
+
+Ensured all variables are properly saved in profiles:
+
+### Added Variables
+- First aggro potion timer
+- Aggro visual check
+- Instance token delay
+- Instance only mode
+- Anti-ban settings
+- Multi-monster mode settings
+- Weapon detection settings
+
+### Verification
+- All GUI components properly update the config manager
+- All settings are properly loaded when a profile is loaded
 
 ## 8. Instance Mode Optimization
 
-Enhanced the instance mode functionality:
+Enhanced the Instance Mode for better usability:
 
-- Added separate timer for first aggro potion
-- Implemented `InstanceOnlyDetector` with specialized aggro potion logic
-- Updated instance panel UI to include first aggro potion timer
-- Implemented timer format "minutes:seconds" in TimeSelector component
+### Features
+- Improved first aggro potion timer with minutes:seconds format
+- Enhanced visual feedback for aggro potion timers
+- Added timeout for instance empty detection (30 seconds)
+- Improved aggro potion visual check
 
-## 9. Testing and Validation
+## 9. GUI Optimization
 
-- Verified that all new components work correctly
-- Ensured backward compatibility with existing functionality
-- Tested profile saving and loading with all new settings
-- Validated that both modes operate as expected
+Improved the overall GUI organization and appearance:
 
-## Conclusion
-
-These enhancements significantly improve the RSPS Color Bot v3 by making it more modular, user-friendly, and feature-rich. The separation of monster and instance modes provides a clearer user experience, while the new components make configuration more intuitive. The anti-ban features add an extra layer of safety, and the improved profile saving ensures that all settings are properly preserved.
+### Enhancements
+- Better structured mode selection window
+- Tabbed interfaces for related settings
+- Consistent styling throughout the application
+- Improved layout for better readability
+- Removed unused variables and redundant code

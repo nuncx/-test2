@@ -17,9 +17,10 @@ from rspsbot.gui.panels.profiles_panel import ProfilesPanel
 from rspsbot.gui.panels.stats_panel import StatsPanel
 
 class InstanceModeWindow(QMainWindow):
-    def __init__(self, config):
+    def __init__(self, config_manager, bot_controller):
         super().__init__()
-        self.config = config
+        self.config_manager = config_manager
+        self.bot_controller = bot_controller
         self.init_ui()
         
     def init_ui(self):
@@ -30,12 +31,12 @@ class InstanceModeWindow(QMainWindow):
         tab_widget = QTabWidget()
         
         # Add panels as tabs
-        tab_widget.addTab(InstancePanel(self.config), "Instance Settings")
-        tab_widget.addTab(CombatPanel(self.config), "Combat Settings")
-        tab_widget.addTab(ControlPanel(self.config), "Control Settings")
-        tab_widget.addTab(ProfilesPanel(self.config), "Profiles")
-        tab_widget.addTab(LogsPanel(self.config), "Logs")
-        tab_widget.addTab(StatsPanel(self.config), "Statistics")
+        tab_widget.addTab(InstancePanel(self.config_manager, self.bot_controller), "Instance Settings")
+        tab_widget.addTab(CombatPanel(self.config_manager, self.bot_controller), "Combat Settings")
+        tab_widget.addTab(ControlPanel(self.config_manager, self.bot_controller), "Control Settings")
+        tab_widget.addTab(ProfilesPanel(self.config_manager), "Profiles")
+        tab_widget.addTab(LogsPanel(self.config_manager), "Logs")
+        tab_widget.addTab(StatsPanel(self.config_manager, self.bot_controller), "Statistics")
         
         self.setCentralWidget(tab_widget)
 
@@ -46,6 +47,12 @@ if __name__ == "__main__":
         def __init__(self):
             pass
             
-    window = InstanceModeWindow(DummyConfig())
+    class DummyBotController:
+        def __init__(self):
+            self.teleport_manager = None
+            self.potion_manager = None
+            self.stats_tracker = None
+            
+    window = InstanceModeWindow(DummyConfig(), DummyBotController())
     window.show()
     sys.exit(app.exec_())
