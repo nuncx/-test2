@@ -1,4 +1,4 @@
-"""
+﻿"""
 Detection settings panel for RSPS Color Bot v3
 """
 import logging
@@ -1029,8 +1029,8 @@ class DetectionPanel(QWidget):
         roi_group_layout.addWidget(roi_description)
         
         # ROI selector
-        from .instance_panel import ROISelector
-        self.roi_selector = ROISelector(self.config_manager)
+        from ..components.advanced_roi_selector import AdvancedROISelector
+        self.roi_selector = AdvancedROISelector(self.config_manager)
         roi_group_layout.addWidget(self.roi_selector)
         
         # ROI buttons

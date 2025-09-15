@@ -1,4 +1,4 @@
-"""
+﻿"""
 GUI panels for RSPS Color Bot v3
 """
 from .control_panel import ControlPanel
@@ -8,5 +8,5 @@ from .profiles_panel import ProfilesPanel
 from .logs_panel import LogsPanel
 from .teleport_panel import TeleportPanel, CoordinateSelector
 from .potion_panel import PotionPanel, PotionDialog
-from .instance_panel import InstancePanel, ROISelector
+from .instance_panel import InstancePanel
 from .stats_panel import StatsPanel, StatsGraph
