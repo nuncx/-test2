@@ -2,6 +2,13 @@
 
 Een geavanceerde color bot voor RuneScape Private Servers met verbeterde detectie, configuratie en gebruikersinterface.
 
+## Korte update (2025-09-15)
+
+- Tijdinstellingen kregen fijnere precisie en ruimere bereiktes (Combat, Detection, Potion, Instance) met duidelijke "s"-suffix en tooltips.
+- Overlay toont nu "Wait: X.Xs" tijdens de post-combat wachttijd; deze resterende tijd is ook beschikbaar als `post_combat_remaining_s` in detectieresultaten.
+- Profielen opslaan is robuuster: actieve invoervelden worden eerst gefinaliseerd zodat bewerkingen niet verloren gaan.
+- Betere betrouwbaarheid: keep-awake hulpprogramma geïntegreerd en een capture-test modus om snel de scherm-capture te valideren.
+
 ## Kenmerken
 
 - **Verbeterde Detectie Engine**: Snellere en nauwkeurigere kleurdetectie met optimalisaties voor prestaties
@@ -67,18 +74,21 @@ De bot bevat nu adaptieve detectiealgoritmen die zich aanpassen aan verschillend
 ### Stappen
 
 1. Clone de repository:
-   ```
+
+   ```bash
    git clone https://github.com/yourusername/RSPS-color-bot-v3.git
    cd RSPS-color-bot-v3
    ```
 
 2. Installeer de benodigde packages:
-   ```
+
+   ```bash
    pip install -r requirements.txt
    ```
 
 3. Start de applicatie:
-   ```
+
+   ```bash
    python run.py
    ```
 
@@ -124,19 +134,19 @@ De bot bevat nu adaptieve detectiealgoritmen die zich aanpassen aan verschillend
 
 Test de prestatieverbetering van parallelle verwerking:
 
-```
+```bash
 python benchmark_parallel_detection.py
 ```
 
 Dit script zal de prestaties van de parallelle detector vergelijken met de originele detector en de resultaten visualiseren.
 
-## Machine Learning Detectie
+## Machine Learning Detectie (Overzicht)
 
 ### Data Verzamelen
 
 Verzamel trainingsdata voor de ML detector:
 
-```
+```bash
 python data_collection_tool.py
 ```
 
@@ -146,7 +156,7 @@ Dit tool helpt bij het verzamelen en annoteren van trainingsdata voor de ML dete
 
 Train een ML model met de verzamelde data:
 
-```
+```bash
 python train_ml_model.py
 ```
 
@@ -156,7 +166,7 @@ Dit script traint een YOLO model met de verzamelde data en exporteert het naar O
 
 Test de ML detector en parallelle verwerking:
 
-```
+```bash
 python test_ml_parallel.py
 ```
 
@@ -166,7 +176,7 @@ Dit script demonstreert de ML detector en parallelle verwerking in actie.
 
 Test de geavanceerde humanisatiefuncties:
 
-```
+```bash
 python test_enhanced_humanization.py
 ```
 
@@ -176,7 +186,7 @@ Dit script biedt een interactieve demo van de geavanceerde humanisatiefuncties, 
 
 Test de adaptieve detectiefuncties:
 
-```
+```bash
 python test_enhanced_adaptive_detection.py
 ```
 
