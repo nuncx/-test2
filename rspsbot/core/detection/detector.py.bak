@@ -13,9 +13,6 @@ from .capture import CaptureService
 from .color_detector import build_mask, build_mask_multi, contours_to_screen_points
 from .color_detector import closest_contour_to_point, largest_contour, random_contour
 
-# Import InstanceOnlyDetector (will be imported when needed)
-# from .instance_only_detector import InstanceOnlyDetector
-
 # Get module logger
 logger = logging.getLogger('rspsbot.core.detection.detector')
 
@@ -43,9 +40,6 @@ class DetectionEngine:
         self.monster_detector = MonsterDetector(config_manager)
         self.combat_detector = CombatDetector(config_manager, capture_service)
         
-        # Instance-Only Mode detector (lazy-loaded when needed)
-        self._instance_only_detector = None
-        
         # Performance optimizations
         self._cache = {}
         self._cache_lock = threading.RLock()
@@ -63,20 +57,6 @@ class DetectionEngine:
         
         logger.info("Detection engine initialized")
     
-    @property
-    def instance_only_detector(self):
-        """
-        Lazy-load the instance-only detector when needed
-        
-        Returns:
-            InstanceOnlyDetector: Instance-only detector
-        """
-        if self._instance_only_detector is None:
-            # Import here to avoid circular imports
-            from .instance_only_detector import InstanceOnlyDetector
-            self._instance_only_detector = InstanceOnlyDetector(self.config_manager, self.capture_service)
-        return self._instance_only_detector
-    
     def detect_cycle(self) -> Dict[str, Any]:
         """
         Perform a full detection cycle: ROI > Tiles > Monsters > Combat
@@ -84,10 +64,6 @@ class DetectionEngine:
         Returns:
             Dictionary with detection results
         """
-        # Check if Instance-Only Mode is enabled
-        if self.config_manager.get('instance_only_mode', False):
-            return self.instance_only_detector.detect_cycle()
-        
         # Check cache for recent results
         current_time = time.time()
         cache_ttl = self.config_manager.get('detection_cache_ttl', 0.1)

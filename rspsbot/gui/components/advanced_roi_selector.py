@@ -4,13 +4,14 @@ Advanced ROI selector component for RSPS Color Bot v3
 import logging
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QSpinBox, QFrame, QSizePolicy
+    QSpinBox, QFrame, QSizePolicy, QGroupBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QRect
 from PyQt5.QtGui import QPainter, QPen, QColor, QBrush
 
 from ...core.config import ROI
 from ..components.screen_picker import ZoomRoiPickerDialog
+from ..components.tooltip_helper import TooltipHelper
 
 # Get module logger
 logger = logging.getLogger('rspsbot.gui.components.advanced_roi_selector')
@@ -100,33 +101,43 @@ class ROIPreview(QFrame):
 
 class AdvancedROISelector(QWidget):
     """
-    Advanced ROI selector widget
+    Advanced ROI selector widget with preview and screenshot picker
     """
     
     roiChanged = pyqtSignal(ROI)
     
-    def __init__(self, config_manager=None, parent=None):
+    def __init__(self, config_manager=None, parent=None, title="Region of Interest"):
         """
         Initialize the ROI selector
         
         Args:
             config_manager: Configuration manager
             parent: Parent widget
+            title: Title for the group box
         """
         super().__init__(parent)
         self.config_manager = config_manager
+        self.title = title
         
         # Initialize UI
         self.init_ui()
+        
+        # Add tooltips
+        self.add_tooltips()
     
     def init_ui(self):
         """Initialize the UI components"""
         # Main layout
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Group box
+        group_box = QGroupBox(self.title)
+        group_layout = QVBoxLayout(group_box)
         
         # ROI preview
         self.roi_preview = ROIPreview()
-        main_layout.addWidget(self.roi_preview)
+        group_layout.addWidget(self.roi_preview)
         
         # Position controls
         position_group = QFrame()
@@ -138,7 +149,6 @@ class AdvancedROISelector(QWidget):
         self.left_spin = QSpinBox()
         self.left_spin.setRange(0, 9999)
         self.left_spin.valueChanged.connect(self.on_roi_changed)
-        self.left_spin.setToolTip("Left coordinate of the ROI")
         position_layout.addWidget(self.left_spin)
         
         # Top
@@ -146,10 +156,9 @@ class AdvancedROISelector(QWidget):
         self.top_spin = QSpinBox()
         self.top_spin.setRange(0, 9999)
         self.top_spin.valueChanged.connect(self.on_roi_changed)
-        self.top_spin.setToolTip("Top coordinate of the ROI")
         position_layout.addWidget(self.top_spin)
         
-        main_layout.addWidget(position_group)
+        group_layout.addWidget(position_group)
         
         # Size controls
         size_group = QFrame()
@@ -162,7 +171,6 @@ class AdvancedROISelector(QWidget):
         self.width_spin.setRange(1, 9999)
         self.width_spin.setValue(100)
         self.width_spin.valueChanged.connect(self.on_roi_changed)
-        self.width_spin.setToolTip("Width of the ROI")
         size_layout.addWidget(self.width_spin)
         
         # Height
@@ -171,28 +179,37 @@ class AdvancedROISelector(QWidget):
         self.height_spin.setRange(1, 9999)
         self.height_spin.setValue(100)
         self.height_spin.valueChanged.connect(self.on_roi_changed)
-        self.height_spin.setToolTip("Height of the ROI")
         size_layout.addWidget(self.height_spin)
         
-        main_layout.addWidget(size_group)
+        group_layout.addWidget(size_group)
         
         # Buttons
         buttons_layout = QHBoxLayout()
         
         self.select_button = QPushButton("Select from Screen")
         self.select_button.clicked.connect(self.on_select_clicked)
-        self.select_button.setToolTip("Select ROI directly from the screen")
         buttons_layout.addWidget(self.select_button)
         
         self.clear_button = QPushButton("Clear")
         self.clear_button.clicked.connect(self.on_clear_clicked)
-        self.clear_button.setToolTip("Clear the current ROI")
         buttons_layout.addWidget(self.clear_button)
         
-        main_layout.addLayout(buttons_layout)
+        group_layout.addLayout(buttons_layout)
+        
+        main_layout.addWidget(group_box)
         
         # Set initial ROI
         self.set_roi(ROI(0, 0, 100, 100))
+    
+    def add_tooltips(self):
+        """Add tooltips to widgets"""
+        TooltipHelper.add_tooltip(self.left_spin, "Left coordinate of the region (X position)")
+        TooltipHelper.add_tooltip(self.top_spin, "Top coordinate of the region (Y position)")
+        TooltipHelper.add_tooltip(self.width_spin, "Width of the region in pixels")
+        TooltipHelper.add_tooltip(self.height_spin, "Height of the region in pixels")
+        TooltipHelper.add_tooltip(self.select_button, "Select a region directly from your screen")
+        TooltipHelper.add_tooltip(self.clear_button, "Clear the current region selection")
+        TooltipHelper.add_tooltip(self.roi_preview, "Preview of the selected region")
     
     def on_roi_changed(self):
         """Handle ROI value change"""

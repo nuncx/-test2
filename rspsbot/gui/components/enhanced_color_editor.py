@@ -4,25 +4,27 @@ Enhanced color editor component for RSPS Color Bot v3
 import logging
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QSlider, QSpinBox, QCheckBox, QGridLayout, QColorDialog
+    QSlider, QSpinBox, QCheckBox, QGridLayout, QColorDialog,
+    QGroupBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
 
 from ...core.config import ColorSpec
 from .color_picker import ColorPicker
+from .tooltip_helper import TooltipHelper
 
 # Get module logger
 logger = logging.getLogger('rspsbot.gui.components.enhanced_color_editor')
 
 class EnhancedColorEditor(QWidget):
     """
-    Enhanced editor for ColorSpec objects
+    Enhanced editor for ColorSpec objects with HSV support and tooltips
     """
     
     colorChanged = pyqtSignal(ColorSpec)
     
-    def __init__(self, config_manager, color_key, parent=None):
+    def __init__(self, config_manager, color_key, parent=None, title="Color Settings"):
         """
         Initialize the enhanced color editor
         
@@ -30,10 +32,12 @@ class EnhancedColorEditor(QWidget):
             config_manager: Configuration manager
             color_key: Configuration key for the color spec
             parent: Parent widget
+            title: Title for the group box
         """
         super().__init__(parent)
         self.config_manager = config_manager
         self.color_key = color_key
+        self.title = title
         
         # Get initial color spec
         self.color_spec = self.config_manager.get_color_spec(color_key)
@@ -44,6 +48,9 @@ class EnhancedColorEditor(QWidget):
         # Initialize UI
         self.init_ui()
         
+        # Add tooltips
+        self.add_tooltips()
+        
         # Update UI with current values
         self.update_ui_from_color_spec()
     
@@ -53,23 +60,24 @@ class EnhancedColorEditor(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
+        # Group box
+        group_box = QGroupBox(self.title)
+        group_layout = QVBoxLayout(group_box)
+        
         # Color picker
         self.color_picker = ColorPicker(self.config_manager)
         self.color_picker.colorChanged.connect(self.on_color_changed)
-        self.color_picker.setToolTip("Select a color using the color picker or pipette tool")
-        main_layout.addWidget(self.color_picker)
+        group_layout.addWidget(self.color_picker)
         
         # HSV settings
-        hsv_group = QWidget()
+        hsv_group = QGroupBox("HSV Settings")
         hsv_layout = QGridLayout(hsv_group)
-        hsv_layout.setContentsMargins(0, 0, 0, 0)
         
         # Use HSV checkbox
         self.use_hsv_checkbox = QCheckBox("Use HSV")
         self.use_hsv_checkbox.setChecked(self.color_spec.use_hsv if hasattr(self.color_spec, 'use_hsv') else False)
         self.use_hsv_checkbox.toggled.connect(self.on_use_hsv_toggled)
-        self.use_hsv_checkbox.setToolTip("Use HSV color space instead of RGB for more accurate color detection")
-        hsv_layout.addWidget(self.use_hsv_checkbox, 0, 0, 1, 2)
+        hsv_layout.addWidget(self.use_hsv_checkbox, 0, 0, 1, 3)
         
         # HSV tolerances
         hsv_layout.addWidget(QLabel("Hue Tolerance:"), 1, 0)
@@ -77,7 +85,6 @@ class EnhancedColorEditor(QWidget):
         self.h_tol_slider.setRange(0, 30)
         self.h_tol_slider.setValue(self.color_spec.tol_h if hasattr(self.color_spec, 'tol_h') else 5)
         self.h_tol_slider.valueChanged.connect(self.on_h_tol_changed)
-        self.h_tol_slider.setToolTip("Tolerance for hue component in HSV color space")
         hsv_layout.addWidget(self.h_tol_slider, 1, 1)
 
         self.h_tol_spin = QSpinBox()
@@ -91,7 +98,6 @@ class EnhancedColorEditor(QWidget):
         self.s_tol_slider.setRange(0, 100)
         self.s_tol_slider.setValue(self.color_spec.tol_s if hasattr(self.color_spec, 'tol_s') else 50)
         self.s_tol_slider.valueChanged.connect(self.on_s_tol_changed)
-        self.s_tol_slider.setToolTip("Tolerance for saturation component in HSV color space")
         hsv_layout.addWidget(self.s_tol_slider, 2, 1)
 
         self.s_tol_spin = QSpinBox()
@@ -105,7 +111,6 @@ class EnhancedColorEditor(QWidget):
         self.v_tol_slider.setRange(0, 100)
         self.v_tol_slider.setValue(self.color_spec.tol_v if hasattr(self.color_spec, 'tol_v') else 50)
         self.v_tol_slider.valueChanged.connect(self.on_v_tol_changed)
-        self.v_tol_slider.setToolTip("Tolerance for value component in HSV color space")
         hsv_layout.addWidget(self.v_tol_slider, 3, 1)
 
         self.v_tol_spin = QSpinBox()
@@ -114,10 +119,23 @@ class EnhancedColorEditor(QWidget):
         self.v_tol_spin.valueChanged.connect(self.on_v_tol_changed)
         hsv_layout.addWidget(self.v_tol_spin, 3, 2)
         
-        main_layout.addWidget(hsv_group)
+        group_layout.addWidget(hsv_group)
+        
+        main_layout.addWidget(group_box)
         
         # Update HSV controls state
         self.update_hsv_controls_state()
+    
+    def add_tooltips(self):
+        """Add tooltips to widgets"""
+        TooltipHelper.add_tooltip(self.color_picker, "Select a color using the color picker or pipette tool")
+        TooltipHelper.add_tooltip(self.use_hsv_checkbox, "Use HSV color space instead of RGB for more accurate color detection")
+        TooltipHelper.add_tooltip(self.h_tol_slider, "Tolerance for hue component in HSV color space")
+        TooltipHelper.add_tooltip(self.h_tol_spin, "Tolerance for hue component in HSV color space")
+        TooltipHelper.add_tooltip(self.s_tol_slider, "Tolerance for saturation component in HSV color space")
+        TooltipHelper.add_tooltip(self.s_tol_spin, "Tolerance for saturation component in HSV color space")
+        TooltipHelper.add_tooltip(self.v_tol_slider, "Tolerance for value component in HSV color space")
+        TooltipHelper.add_tooltip(self.v_tol_spin, "Tolerance for value component in HSV color space")
     
     def update_ui_from_color_spec(self):
         """Update UI from color spec"""
@@ -224,17 +242,10 @@ class EnhancedColorEditor(QWidget):
         )
         
         # Set HSV settings
-        if hasattr(color_spec, 'use_hsv'):
-            color_spec.use_hsv = self.use_hsv_checkbox.isChecked()
-        
-        if hasattr(color_spec, 'tol_h'):
-            color_spec.tol_h = self.h_tol_spin.value()
-        
-        if hasattr(color_spec, 'tol_s'):
-            color_spec.tol_s = self.s_tol_spin.value()
-        
-        if hasattr(color_spec, 'tol_v'):
-            color_spec.tol_v = self.v_tol_spin.value()
+        color_spec.use_hsv = self.use_hsv_checkbox.isChecked()
+        color_spec.tol_h = self.h_tol_spin.value()
+        color_spec.tol_s = self.s_tol_spin.value()
+        color_spec.tol_v = self.v_tol_spin.value()
         
         # Save color spec
         self.color_spec = color_spec

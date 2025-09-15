@@ -36,22 +36,6 @@ class ControlPanel(QWidget):
         # Main layout
         main_layout = QVBoxLayout(self)
         
-        # Mode selection group
-        mode_group = QGroupBox("Bot Mode")
-        mode_layout = QVBoxLayout(mode_group)
-        
-        # Instance-Only Mode checkbox
-        self.instance_only_checkbox = QCheckBox("Instance-Only Mode")
-        self.instance_only_checkbox.setChecked(self.config_manager.get('instance_only_mode', False))
-        self.instance_only_checkbox.toggled.connect(self.on_instance_only_toggled)
-        self.instance_only_checkbox.setToolTip(
-            "Enable Instance-Only Mode to focus solely on aggro potion and instance teleport mechanics, "
-            "skipping tile and monster detection entirely. Configure in the Instance Settings tab."
-        )
-        mode_layout.addWidget(self.instance_only_checkbox)
-        
-        main_layout.addWidget(mode_group)
-        
         # Window selection group
         window_group = QGroupBox("Window Selection")
         window_layout = QVBoxLayout(window_group)
@@ -288,21 +272,6 @@ class ControlPanel(QWidget):
         """Handle humanize checkbox toggle"""
         logger.debug(f"Humanization {'enabled' if checked else 'disabled'}")
         self.config_manager.set('humanize_on', checked)
-    
-    def on_instance_only_toggled(self, checked):
-        """Handle instance-only mode checkbox toggle"""
-        self.config_manager.set('instance_only_mode', checked)
-        logger.info(f"Instance-Only Mode {'enabled' if checked else 'disabled'}")
-        
-        # Show a message about configuring Instance-Only Mode
-        if checked:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self,
-                "Instance-Only Mode Enabled",
-                "Instance-Only Mode is now enabled. Please configure the settings in the Instance Settings tab, "
-                "under the 'Instance-Only Mode' tab."
-            )
     
     def on_break_every_changed(self, value):
         """Handle break every value change"""

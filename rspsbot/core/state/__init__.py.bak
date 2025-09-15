@@ -390,9 +390,6 @@ class BotController:
     def get_status(self):
         """Get status string"""
         if self._state == BotState.RUNNING:
-            # Add Instance-Only Mode indicator if enabled
-            if self.config_manager.get('instance_only_mode', False):
-                return "Running (Instance-Only Mode)"
             return "Running"
         elif self._state == BotState.PAUSED:
             return "Paused"
@@ -411,9 +408,6 @@ class BotController:
         """Main bot loop"""
         logger.info("Main bot loop started")
         
-        # Initialize instance manager if needed
-        self._instance_manager = None
-        
         try:
             while not self._stop_event.is_set():
                 # Check if paused
@@ -426,18 +420,8 @@ class BotController:
                     time.sleep(0.2)
                     continue
                 
-                # Check if Instance-Only Mode is enabled
-                instance_only_mode = self.config_manager.get('instance_only_mode', False)
-                
                 cycle_start = time.time()
                 result = self.detection_engine.detect_cycle()
-                
-                # Handle Instance-Only Mode
-                if instance_only_mode:
-                    self._process_instance_only_mode(result)
-                    continue
-                
-                # Normal mode processing
                 tiles = result.get('tiles', [])
                 monsters = result.get('monsters', [])
                 in_combat = result.get('in_combat', False)
@@ -554,84 +538,6 @@ class BotController:
         
         finally:
             logger.info("Main bot loop ended")
-
-    def _process_instance_only_mode(self, result):
-        """
-        Process Instance-Only Mode detection results
-        
-        Args:
-            result: Detection result from instance_only_detector
-        """
-        # Initialize instance manager if needed
-        if not hasattr(self, '_instance_manager') or self._instance_manager is None:
-            self._instance_manager = {
-                'last_aggro_time': 0,
-                'last_teleport_time': 0,
-                'teleport_cooldown': 5.0  # Cooldown between teleport attempts
-            }
-        
-        # Extract result data
-        in_combat = result.get('in_combat', False)
-        hp_seen = result.get('hp_seen', False)
-        aggro_active = result.get('aggro_active', False)
-        instance_empty = result.get('instance_empty', False)
-        
-        # Log status
-        logger.info(f"Instance-Only Mode - HP bar seen: {'Y' if hp_seen else 'N'}; InCombat: {in_combat}")
-        logger.info(f"Instance-Only Mode - Aggro active: {'Y' if aggro_active else 'N'}; Instance empty: {'Y' if instance_empty else 'N'}")
-        
-        # Check if we need to use aggro potion
-        if not aggro_active:
-            # Get aggro potion location
-            detector = self.detection_engine.instance_only_detector
-            aggro_location = detector.get_aggro_potion_location()
-            
-            if aggro_location and self.action_manager:
-                # Check cooldown
-                now = time.time()
-                if now - self._instance_manager['last_aggro_time'] >= 2.0:  # 2-second cooldown
-                    logger.info(f"Using aggro potion at ({aggro_location.x}, {aggro_location.y})")
-                    if self.action_manager.mouse_controller.move_and_click(aggro_location.x, aggro_location.y):
-                        self._instance_manager['last_aggro_time'] = now
-                        # Publish event
-                        self.event_system.publish(EventType.AGGRO_USED, {
-                            'position': (aggro_location.x, aggro_location.y),
-                            'timestamp': now
-                        })
-        
-        # Check if we need to teleport to instance
-        if instance_empty:
-            # Get instance token and teleport locations
-            detector = self.detection_engine.instance_only_detector
-            token_location = detector.get_instance_token_location()
-            teleport_location = detector.get_instance_teleport_location()
-            token_delay = detector.get_instance_token_delay()
-            
-            if token_location and teleport_location and self.action_manager:
-                # Check cooldown
-                now = time.time()
-                if now - self._instance_manager['last_teleport_time'] >= self._instance_manager['teleport_cooldown']:
-                    logger.info(f"Instance empty for {result.get('hp_timeout', 30)} seconds, teleporting to instance")
-                    
-                    # Click instance token
-                    logger.info(f"Clicking instance token at ({token_location.x}, {token_location.y})")
-                    if self.action_manager.mouse_controller.move_and_click(token_location.x, token_location.y):
-                        # Wait for token delay
-                        time.sleep(token_delay)
-                        
-                        # Click teleport location
-                        logger.info(f"Clicking teleport at ({teleport_location.x}, {teleport_location.y})")
-                        if self.action_manager.mouse_controller.move_and_click(teleport_location.x, teleport_location.y):
-                            self._instance_manager['last_teleport_time'] = now
-                            # Publish event
-                            self.event_system.publish(EventType.INSTANCE_ENTERED, {
-                                'token_position': (token_location.x, token_location.y),
-                                'teleport_position': (teleport_location.x, teleport_location.y),
-                                'timestamp': now
-                            })
-                            
-                            # Reset combat status after teleporting
-                            self.detection_engine.instance_only_detector.in_combat = False
 
     def _install_hotkeys(self):
         """Install a global F8 hotkey to toggle pause/resume."""
