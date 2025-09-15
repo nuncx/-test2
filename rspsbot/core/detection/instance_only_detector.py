@@ -35,8 +35,6 @@ class InstanceOnlyDetector:
         
         # State tracking
         self.last_hp_seen_time = 0
-        self.last_aggro_check_time = 0
-        self.aggro_active = False
         self.in_combat = False
         
         logger.info("Instance-Only Mode detector initialized")
@@ -64,13 +62,6 @@ class InstanceOnlyDetector:
             if time.time() - self.last_hp_seen_time > hp_timeout:
                 self.in_combat = False
         
-        # Check aggro potion if not in combat or if it's been a while since last check
-        aggro_check_interval = self.config_manager.get('aggro_check_interval', 60.0)
-        if (not self.in_combat or 
-            time.time() - self.last_aggro_check_time > aggro_check_interval):
-            self.aggro_active = self.check_aggro_potion()
-            self.last_aggro_check_time = time.time()
-        
         # Calculate detection time
         detection_time_ms = (time.time() - start_time) * 1000
         
@@ -79,7 +70,6 @@ class InstanceOnlyDetector:
             'instance_only_mode': True,
             'in_combat': self.in_combat,
             'hp_seen': hp_bar_visible,
-            'aggro_active': self.aggro_active,
             'last_hp_seen_time': self.last_hp_seen_time,
             'hp_timeout': self.config_manager.get('instance_hp_timeout', 30.0),
             'instance_empty': not self.in_combat,
@@ -88,7 +78,7 @@ class InstanceOnlyDetector:
         }
         
         return result
-    
+
     def check_hp_bar_visibility(self) -> bool:
         """
         Check if the HP bar is visible
@@ -115,10 +105,38 @@ class InstanceOnlyDetector:
             return False
         
         # Create mask for HP bar color
-        mask = build_mask(frame, hp_bar_color)
+        mask_out = build_mask(frame, hp_bar_color)
+        # Be defensive: build_mask should return (mask, contours)
+        if isinstance(mask_out, tuple) and len(mask_out) >= 1:
+            mask = mask_out[0]
+        else:
+            mask = mask_out  # fallback
         
-        # Count non-zero pixels
-        non_zero_count = cv2.countNonZero(mask)
+        # Ensure mask is a single-channel uint8 image before count
+        try:
+            import numpy as _np
+            if mask is None:
+                logger.warning("HP mask is None; treating as not visible")
+                return False
+            if isinstance(mask, (tuple, list)):
+                # Unexpected structure; log and bail out safely
+                logger.warning(f"HP mask has unexpected type {type(mask)}; treating as not visible")
+                return False
+            if isinstance(mask, _np.ndarray):
+                if mask.ndim == 3:
+                    # Convert 3-channel to grayscale
+                    mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+                if mask.dtype != _np.uint8:
+                    mask = mask.astype(_np.uint8)
+            else:
+                logger.warning(f"HP mask is not ndarray (type={type(mask)}); treating as not visible")
+                return False
+            
+            # Count non-zero pixels
+            non_zero_count = cv2.countNonZero(mask)
+        except Exception as e:
+            logger.error(f"Error processing HP mask: {e}")
+            return False
         
         # Get minimum pixel count from config
         min_pixel_count = self.config_manager.get('instance_hp_min_pixels', 50)
@@ -131,67 +149,8 @@ class InstanceOnlyDetector:
         
         return is_visible
     
-    def check_aggro_potion(self) -> bool:
-        """
-        Check if aggro potion is active
-        
-        Returns:
-            bool: True if aggro potion is active, False otherwise
-        """
-        # Check if visual check is enabled
-        visual_check = self.config_manager.get('instance_aggro_visual_check', True)
-        if not visual_check:
-            # If visual check is disabled, use time-based check
-            aggro_duration = self.config_manager.get('aggro_duration', 300.0)
-            last_aggro_time = self.config_manager.get('last_aggro_time', 0)
-            
-            return time.time() - last_aggro_time < aggro_duration
-        
-        # Get aggro effect ROI
-        aggro_roi = self.config_manager.get_roi('instance_aggro_effect_roi')
-        if not aggro_roi:
-            logger.warning("Aggro effect ROI not configured for Instance-Only Mode")
-            return False
-        
-        # Get aggro effect color
-        aggro_color = self.config_manager.get_color_spec('instance_aggro_effect_color')
-        if not aggro_color:
-            logger.warning("Aggro effect color not configured for Instance-Only Mode")
-            return False
-        
-        # Capture aggro effect region
-        frame = self.capture_service.capture_region(aggro_roi)
-        if frame is None:
-            logger.warning("Failed to capture aggro effect region")
-            return False
-        
-        # Create mask for aggro effect color
-        mask = build_mask(frame, aggro_color)
-        
-        # Count non-zero pixels
-        non_zero_count = cv2.countNonZero(mask)
-        
-        # Get minimum pixel count from config
-        min_pixel_count = self.config_manager.get('instance_aggro_min_pixels', 50)
-        
-        # Aggro is active if there are enough matching pixels
-        is_active = non_zero_count >= min_pixel_count
-        
-        if is_active:
-            logger.debug(f"Aggro effect detected with {non_zero_count} matching pixels")
-            # Update last aggro time
-            self.config_manager.set('last_aggro_time', time.time())
-        
-        return is_active
     
-    def should_use_aggro_potion(self) -> bool:
-        """
-        Check if aggro potion should be used
-        
-        Returns:
-            bool: True if aggro potion should be used, False otherwise
-        """
-        return not self.aggro_active
+    # Visual aggro checks removed; timer-based aggro is handled in controller
     
     def should_teleport_to_instance(self) -> bool:
         """

@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QTabWidget, QStatusBar, QLabel, QPushButton
 )
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal
 
 from .panels import (
     ControlPanel, DetectionPanel, CombatPanel,
@@ -25,6 +25,8 @@ class MainWindow(QMainWindow):
     """
     Main window of the application with tab-based interface
     """
+    # Signal emitted before saving a profile so panels can flush unsaved UI into config
+    beforeProfileSave = pyqtSignal()
     
     def __init__(self, config_manager, bot_controller):
         """
@@ -125,9 +127,14 @@ class MainWindow(QMainWindow):
         self.potion_tab = PotionPanel(self.config_manager, self.bot_controller)
         self.tab_widget.addTab(self.potion_tab, "Potion Settings")
         
-        # Instance settings tab
+        # Instance settings tab (entry/teleport basics)
         self.instance_tab = InstancePanel(self.config_manager, self.bot_controller)
         self.tab_widget.addTab(self.instance_tab, "Instance Settings")
+
+        # Instance Mode main tab (new, reorganized)
+        from .panels.instance_panel import InstanceModePanel
+        self.instance_mode_tab = InstanceModePanel(self.config_manager, self.bot_controller)
+        self.tab_widget.addTab(self.instance_mode_tab, "Instance Mode")
         
         # Statistics tab
         self.stats_tab = StatsPanel(self.config_manager, self.bot_controller)
@@ -136,6 +143,36 @@ class MainWindow(QMainWindow):
         # Profiles tab
         self.profiles_tab = ProfilesPanel(self.config_manager)
         self.tab_widget.addTab(self.profiles_tab, "Profiles")
+
+        # Connect pre-save hook: before profiles panel saves, flush Instance Mode edits
+        try:
+            # Monkey-patch the profiles panel to emit our hook before saving
+            orig_on_save = self.profiles_tab.on_save_clicked
+            orig_on_save_as = self.profiles_tab.on_save_as_clicked
+
+            def wrapped_on_save():
+                try:
+                    # Flush Instance Mode edits silently before profile save
+                    if hasattr(self, 'instance_mode_tab') and hasattr(self.instance_mode_tab, 'save_instance_mode_settings'):
+                        self.instance_mode_tab.save_instance_mode_settings(silent=True)
+                except Exception:
+                    pass
+                self.beforeProfileSave.emit()
+                return orig_on_save()
+
+            def wrapped_on_save_as():
+                try:
+                    if hasattr(self, 'instance_mode_tab') and hasattr(self.instance_mode_tab, 'save_instance_mode_settings'):
+                        self.instance_mode_tab.save_instance_mode_settings(silent=True)
+                except Exception:
+                    pass
+                self.beforeProfileSave.emit()
+                return orig_on_save_as()
+
+            self.profiles_tab.on_save_clicked = wrapped_on_save
+            self.profiles_tab.on_save_as_clicked = wrapped_on_save_as
+        except Exception as e:
+            logger.error(f"Failed to wire profile pre-save hook: {e}")
         
         # Logs tab
         self.logs_tab = LogsPanel(self.config_manager)
@@ -153,6 +190,10 @@ class MainWindow(QMainWindow):
         
         self.monster_count_label = QLabel("Monsters: 0")
         self.status_bar.addPermanentWidget(self.monster_count_label)
+
+        # Aggro remaining-time label
+        self.aggro_status_label = QLabel("Aggro: --:--")
+        self.status_bar.addPermanentWidget(self.aggro_status_label)
     
     def update_status(self):
         """Update status information"""
@@ -173,6 +214,23 @@ class MainWindow(QMainWindow):
         
         # Update button states
         self.update_button_states()
+
+        # Update aggro remaining time (Instance Mode)
+        try:
+            remaining = self.bot_controller.get_aggro_remaining_seconds()
+            if remaining is None:
+                self.aggro_status_label.setText("Aggro: n/a")
+            else:
+                remaining = max(0, int(remaining))
+                m, s = divmod(remaining, 60)
+                if m >= 60:
+                    h, rem = divmod(m, 60)
+                    self.aggro_status_label.setText(f"Aggro: {int(h):02}:{int(rem):02}:{int(s):02}")
+                else:
+                    self.aggro_status_label.setText(f"Aggro: {int(m):02}:{int(s):02}")
+        except Exception:
+            # Keep previous text on any error
+            pass
 
         # Sync overlay visibility
         if self.debug_overlay is not None:
@@ -229,6 +287,16 @@ class MainWindow(QMainWindow):
         logger.info("Stopping bot")
         self.bot_controller.stop()
         self.update_button_states()
+
+    def focus_instance_mode_tab(self):
+        """Focus the Instance Mode main tab if present."""
+        try:
+            # Find the index of the instance mode tab and switch to it
+            idx = self.tab_widget.indexOf(self.instance_mode_tab)
+            if idx >= 0:
+                self.tab_widget.setCurrentIndex(idx)
+        except Exception:
+            pass
     
     def closeEvent(self, event):
         """Handle window close event"""

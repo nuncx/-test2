@@ -339,3 +339,63 @@ class ZoomColorPickerDialog(QDialog):
                 self.preview.setStyleSheet(f"background: rgb({self.selected_color[0]}, {self.selected_color[1]}, {self.selected_color[2]}); border: 1px solid #888;")
                 return True
         return super().eventFilter(obj, event)
+
+
+class ZoomPointPickerDialog(QDialog):
+    """Dialog to pick a single point from a zoomable screenshot of the focused client.
+    Returns global coordinates mapped using CaptureService bbox.
+    """
+    def __init__(self, config_manager=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Pick Point from Screenshot")
+        self.resize(900, 600)
+        self._config = config_manager
+        self.selected_point = None  # (x, y) global
+
+        layout = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_out_btn = QPushButton("-")
+        self.info_label = QLabel("Click to select point. Right-drag to pan. Wheel to zoom.")
+        self.info_label.setStyleSheet("color: #666")
+        top.addWidget(self.zoom_in_btn)
+        top.addWidget(self.zoom_out_btn)
+        top.addStretch()
+        top.addWidget(self.info_label)
+        layout.addLayout(top)
+
+        self.view = ZoomImageView()
+        layout.addWidget(self.view)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        layout.addWidget(buttons)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+
+        self.zoom_in_btn.clicked.connect(lambda: self.view.scale(1.15, 1.15))
+        self.zoom_out_btn.clicked.connect(lambda: self.view.scale(1/1.15, 1/1.15))
+
+        # Load screenshot and hook clicks
+        pm, self._bbox = grab_focused_window_pixmap(self._config)
+        self.view.set_image(pm)
+        self.view.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj is self.view.viewport() and event.type() == event.MouseButtonPress:
+            if event.button() == Qt.LeftButton:
+                scene_pos = self.view.mapToScene(event.pos())
+                x = int(scene_pos.x())
+                y = int(scene_pos.y())
+                # Map to global via bbox
+                gx = self._bbox.get('left', 0) + max(0, x)
+                gy = self._bbox.get('top', 0) + max(0, y)
+                self.selected_point = (gx, gy)
+                # Visual feedback: small rect
+                return True
+        return super().eventFilter(obj, event)
+
+    def _on_accept(self):
+        if not self.selected_point:
+            self.reject()
+            return
+        self.accept()

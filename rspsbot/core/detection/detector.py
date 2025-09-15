@@ -20,6 +20,34 @@ from .color_detector import closest_contour_to_point, largest_contour, random_co
 logger = logging.getLogger('rspsbot.core.detection.detector')
 
 class DetectionEngine:
+    def detect_text(self, text: str, bbox: Optional[Dict[str, int]] = None, lang: str = 'eng', config: str = '') -> bool:
+        """
+        Detect if a line of text appears in a region of the screen using OCR.
+        Args:
+            text: Text to search for (case-insensitive)
+            bbox: Bounding box to capture (left, top, width, height). If None, uses window.
+            lang: Language for OCR (default 'eng')
+            config: Extra config for pytesseract
+        Returns:
+            True if text is found, False otherwise
+        """
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError:
+            logger.error("pytesseract or Pillow not installed")
+            return False
+
+        # Capture image from screen
+        img_bgr = self.capture_service.capture(bbox)
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(img_rgb)
+
+        # Run OCR
+        ocr_result = pytesseract.image_to_string(pil_img, lang=lang, config=config)
+        logger.debug(f"OCR result: {ocr_result}")
+        # Search for text (case-insensitive)
+        return text.lower() in ocr_result.lower()
     """
     Central detection engine that coordinates detection of tiles, monsters, and combat status
     

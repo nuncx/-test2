@@ -39,14 +39,14 @@ class ControlPanel(QWidget):
         # Mode selection group
         mode_group = QGroupBox("Bot Mode")
         mode_layout = QVBoxLayout(mode_group)
-        
-        # Instance-Only Mode checkbox
-        self.instance_only_checkbox = QCheckBox("Instance-Only Mode")
+
+        # Instance Mode checkbox
+        self.instance_only_checkbox = QCheckBox("Instance Mode")
         self.instance_only_checkbox.setChecked(self.config_manager.get('instance_only_mode', False))
         self.instance_only_checkbox.toggled.connect(self.on_instance_only_toggled)
         self.instance_only_checkbox.setToolTip(
-            "Enable Instance-Only Mode to focus solely on aggro potion and instance teleport mechanics, "
-            "skipping tile and monster detection entirely. Configure in the Instance Settings tab."
+            "Enable Instance Mode to focus solely on aggro potion timer and instance teleport. "
+            "Configure it under the main 'Instance Mode' tab."
         )
         mode_layout.addWidget(self.instance_only_checkbox)
         
@@ -294,15 +294,16 @@ class ControlPanel(QWidget):
         self.config_manager.set('instance_only_mode', checked)
         logger.info(f"Instance-Only Mode {'enabled' if checked else 'disabled'}")
         
-        # Show a message about configuring Instance-Only Mode
+        # When enabling, jump to the Instance Mode tab in the main window
         if checked:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self,
-                "Instance-Only Mode Enabled",
-                "Instance-Only Mode is now enabled. Please configure the settings in the Instance Settings tab, "
-                "under the 'Instance-Only Mode' tab."
-            )
+            try:
+                # Walk up to MainWindow and focus Instance Mode tab via QApplication
+                from PyQt5.QtWidgets import QApplication
+                mw = QApplication.activeWindow()
+                if hasattr(mw, 'focus_instance_mode_tab'):
+                    mw.focus_instance_mode_tab()
+            except Exception:
+                pass
     
     def on_break_every_changed(self, value):
         """Handle break every value change"""

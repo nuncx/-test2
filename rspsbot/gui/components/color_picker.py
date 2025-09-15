@@ -12,7 +12,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QPoint
 from PyQt5.QtGui import QColor, QPixmap, QImage, QCursor
 
 from ...core.config import ColorSpec
-from ...core.detection.capture import CaptureService
+from ..components.screen_picker import ZoomColorPickerDialog
 
 # Get module logger
 logger = logging.getLogger('rspsbot.gui.components.color_picker')
@@ -195,68 +195,15 @@ class ColorPicker(QWidget):
             self.set_color(color)
     
     def on_pipette_clicked(self):
-        """Handle pipette button click"""
-        # Hide this window temporarily
-        self.window().setWindowOpacity(0.3)
-        QApplication.processEvents()
-        
+        """Handle pipette button click using zoomable screenshot picker."""
         try:
-            # Create capture service if needed
-            if self.capture_service is None:
-                self.capture_service = CaptureService()
-            
-            # Capture screen
-            screenshot = self.capture_service.capture_screen()
-            
-            if screenshot is None:
-                logger.error("Failed to capture screen")
-                return
-            
-            # Wait for mouse click
-            QApplication.setOverrideCursor(QCursor(Qt.CrossCursor))
-            
-            # Show message
-            logger.info("Click on the screen to pick a color")
-            
-            # Wait for click
-            original_pos = QCursor.pos()
-            
-            # This is a simple implementation - in a real application,
-            # you would use a global event filter to capture mouse clicks
-            # For now, we'll just wait a bit and then get the cursor position
-            QApplication.processEvents()
-            import time
-            time.sleep(2)  # Wait for user to position cursor
-            
-            # Get cursor position
-            pos = QCursor.pos()
-            
-            # Reset cursor
-            QCursor.setPos(original_pos)
-            QApplication.restoreOverrideCursor()
-            
-            # Get color at position
-            x, y = pos.x(), pos.y()
-            
-            # Convert to BGR
-            img_np = np.array(screenshot)
-            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-            
-            # Get color at position
-            if 0 <= y < img_bgr.shape[0] and 0 <= x < img_bgr.shape[1]:
-                b, g, r = img_bgr[y, x]
-                color = QColor(r, g, b)
-                self.set_color(color)
+            dlg = ZoomColorPickerDialog(getattr(self, 'config_manager', None), self)
+            if dlg.exec_() == dlg.Accepted and dlg.selected_color is not None:
+                r, g, b = dlg.selected_color
+                self.set_color(QColor(r, g, b))
                 logger.info(f"Picked color: RGB({r}, {g}, {b})")
-            else:
-                logger.warning(f"Position ({x}, {y}) is outside the screen")
-        
         except Exception as e:
             logger.error(f"Error picking color: {e}")
-        
-        finally:
-            # Restore window
-            self.window().setWindowOpacity(1.0)
     
     def on_color_component_changed(self):
         """Handle color component slider change"""

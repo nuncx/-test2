@@ -98,7 +98,8 @@ class MouseController:
         clicks: int = 1,
         move_duration: Optional[float] = None,
         click_delay: Optional[float] = None,
-        post_click_sleep: Optional[float] = None
+        post_click_sleep: Optional[float] = None,
+        enforce_guard: bool = True
     ) -> bool:
         """
         Move mouse to position and click
@@ -114,10 +115,11 @@ class MouseController:
         Returns:
             True if successful, False otherwise
         """
-        # Check anti-overclick
-        if not self._check_click_allowed(x, y):
-            logger.debug(f"Click at ({x}, {y}) blocked by anti-overclick")
-            return False
+        # Check anti-overclick (optional)
+        if enforce_guard:
+            if not self._check_click_allowed(x, y):
+                logger.debug(f"Click at ({x}, {y}) blocked by anti-overclick")
+                return False
         
         try:
             # Move mouse

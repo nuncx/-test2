@@ -406,6 +406,34 @@ class BotController:
     def get_stats(self):
         """Get statistics"""
         return self._stats.copy()
+
+    def get_aggro_remaining_seconds(self) -> Optional[float]:
+        """Return seconds remaining until next aggro click in Instance Mode.
+
+        Returns None if Instance Mode is disabled or schedule unknown.
+        """
+        try:
+            if not bool(self.config_manager.get('instance_only_mode', False)):
+                return None
+            # Determine next time from instance manager if available
+            mgr = getattr(self, '_instance_manager', None)
+            now = time.time()
+            # Compute interval from config
+            try:
+                interval_min = float(self.config_manager.get('instance_aggro_interval_min', 15.0))
+            except Exception:
+                interval_min = 15.0
+            interval_s = max(10.0, interval_min * 60.0)
+
+            if mgr is None:
+                # Not yet initialized; pretend full interval remaining
+                return interval_s
+            nxt = mgr.get('next_aggro_time')
+            if nxt is None:
+                return interval_s
+            return max(0.0, nxt - now)
+        except Exception:
+            return None
     
     def _main_loop(self):
         """Main bot loop"""
@@ -567,40 +595,152 @@ class BotController:
             self._instance_manager = {
                 'last_aggro_time': 0,
                 'last_teleport_time': 0,
-                'teleport_cooldown': 5.0  # Cooldown between teleport attempts
+                'teleport_cooldown': 5.0,  # Cooldown between teleport attempts
+                'next_aggro_time': None,
+                # Post-teleport wait/retry state
+                'post_teleport_active': False,
+                'post_teleport_wait_until': 0.0,
+                'post_teleport_retry_count': 0,
             }
-        
+
         # Extract result data
         in_combat = result.get('in_combat', False)
         hp_seen = result.get('hp_seen', False)
-        aggro_active = result.get('aggro_active', False)
+        # We no longer rely on visual aggro detection; use timer-based logic instead
         instance_empty = result.get('instance_empty', False)
-        
-        # Log status
-        logger.info(f"Instance-Only Mode - HP bar seen: {'Y' if hp_seen else 'N'}; InCombat: {in_combat}")
-        logger.info(f"Instance-Only Mode - Aggro active: {'Y' if aggro_active else 'N'}; Instance empty: {'Y' if instance_empty else 'N'}")
-        
-        # Check if we need to use aggro potion
-        if not aggro_active:
-            # Get aggro potion location
+
+        # Log status (throttled to avoid log spam)
+        try:
+            status_interval = float(self.config_manager.get('instance_status_log_interval', 1.0))
+        except Exception:
+            status_interval = 1.0
+        now_ts = time.time()
+        last_status = self._instance_manager.get('last_status_log_time', 0.0)
+        if now_ts - last_status >= max(0.1, status_interval):
+            logger.info(f"Instance-Only Mode - HP bar seen: {'Y' if hp_seen else 'N'}; InCombat: {in_combat}")
+            logger.info(f"Instance-Only Mode - Instance empty: {'Y' if instance_empty else 'N'}")
+            self._instance_manager['last_status_log_time'] = now_ts
+
+        # Timer-based aggro potion usage (no visual checks)
+        try:
             detector = self.detection_engine.instance_only_detector
             aggro_location = detector.get_aggro_potion_location()
-            
-            if aggro_location and self.action_manager:
-                # Check cooldown
-                now = time.time()
-                if now - self._instance_manager['last_aggro_time'] >= 2.0:  # 2-second cooldown
-                    logger.info(f"Using aggro potion at ({aggro_location.x}, {aggro_location.y})")
-                    if self.action_manager.mouse_controller.move_and_click(aggro_location.x, aggro_location.y):
-                        self._instance_manager['last_aggro_time'] = now
-                        # Publish event
-                        self.event_system.publish(EventType.AGGRO_USED, {
-                            'position': (aggro_location.x, aggro_location.y),
-                            'timestamp': now
-                        })
-        
-        # Check if we need to teleport to instance
+        except Exception:
+            aggro_location = None
+
+        # Interval in minutes (default 15)
+        try:
+            interval_min = float(self.config_manager.get('instance_aggro_interval_min', 15.0))
+        except Exception:
+            interval_min = 15.0
+        interval_s = max(10.0, interval_min * 60.0)  # guard: at least 10s
+
+        now = time.time()
+        if self._instance_manager.get('next_aggro_time') is None:
+            self._instance_manager['next_aggro_time'] = now + interval_s
+
+        if aggro_location and self.action_manager and now >= self._instance_manager['next_aggro_time']:
+            logger.info(f"Aggro timer reached ({interval_min:.1f} min). Clicking aggro at ({aggro_location.x}, {aggro_location.y})")
+            if self.action_manager.mouse_controller.move_and_click(aggro_location.x, aggro_location.y):
+                self._instance_manager['next_aggro_time'] = now + interval_s
+                self._instance_manager['last_aggro_time'] = now
+                # Persist last aggro time for any time-based checks elsewhere
+                try:
+                    self.config_manager.set('last_aggro_time', now)
+                except Exception:
+                    pass
+                self.event_system.publish(EventType.AGGRO_USED, {
+                    'position': (aggro_location.x, aggro_location.y),
+                    'interval_min': interval_min,
+                })
+
+        # Check post-teleport wait/retry flow first
+        try:
+            hp_wait_s = float(self.config_manager.get('instance_post_teleport_hp_wait', 8.0))
+        except Exception:
+            hp_wait_s = 8.0
+
+        mgr = self._instance_manager
+        now = time.time()
+        if mgr.get('post_teleport_active', False):
+            # If HP bar becomes visible during the waiting window, success: reset retry state
+            if hp_seen or in_combat:
+                logger.info("HP bar seen after teleport; instance resumed. Resetting retry counter.")
+                mgr['post_teleport_active'] = False
+                mgr['post_teleport_wait_until'] = 0.0
+                mgr['post_teleport_retry_count'] = 0
+                # Continue normal loop
+                return
+
+            # Still waiting for HP bar to appear?
+            wait_until = float(mgr.get('post_teleport_wait_until', 0.0))
+            if now < wait_until:
+                remaining = max(0.0, wait_until - now)
+                logger.info(f"Waiting for HP after teleport: {remaining:.1f}s remaining")
+                return  # defer other actions while waiting
+
+            # Wait expired and no HP bar; retry entering the instance
+            retries = int(mgr.get('post_teleport_retry_count', 0))
+            max_retries = int(self.config_manager.get('instance_teleport_max_retries', 5))
+            if retries >= max_retries:
+                logger.error(f"Instance restart failed after {retries} attempts. Stopping bot.")
+                self.stop()
+                return
+
+            # Attempt retry: click token -> wait -> click teleport
+            detector = self.detection_engine.instance_only_detector
+            token_location = detector.get_instance_token_location()
+            teleport_location = detector.get_instance_teleport_location()
+            token_delay = detector.get_instance_token_delay()
+
+            if token_location and teleport_location and self.action_manager:
+                if now - mgr['last_teleport_time'] >= mgr['teleport_cooldown']:
+                    logger.info(f"Retrying instance entry (attempt {retries+1}/{max_retries})")
+                    # Bypass anti-overclick guard for deterministic instance entry clicks
+                    if self.action_manager.mouse_controller.move_and_click(token_location.x, token_location.y, enforce_guard=False):
+                        time.sleep(token_delay)
+                        if self.action_manager.mouse_controller.move_and_click(teleport_location.x, teleport_location.y, enforce_guard=False):
+                            mgr['last_teleport_time'] = now
+                            mgr['post_teleport_retry_count'] = retries + 1
+                            mgr['post_teleport_wait_until'] = time.time() + hp_wait_s
+                            mgr['post_teleport_active'] = True
+                            # After clicking teleport, reset combat flag to allow fresh detection
+                            self.detection_engine.instance_only_detector.in_combat = False
+                            logger.info(
+                                f"Waiting up to {hp_wait_s:.1f}s for HP bar after retry (attempt {mgr['post_teleport_retry_count']})."
+                            )
+                            return
+                        else:
+                            logger.warning("Retry: teleport click failed (move_and_click returned False)")
+                    else:
+                        logger.warning("Retry: token click failed (move_and_click returned False)")
+                else:
+                    # Still under teleport cooldown; wait a bit
+                    cd_left = (mgr['teleport_cooldown'] - (now - mgr['last_teleport_time']))
+                    logger.info(f"Teleport retry cooling down: {cd_left:.1f}s left")
+                    return
+            else:
+                logger.warning("Token/Teleport coordinates not set; cannot retry instance entry.")
+                return
+
+        # Check if we need to teleport to instance (initial attempt)
         if instance_empty:
+            # Enforce: only teleport if there has been NO combat for at least HP BAR TIMEOUT seconds
+            try:
+                hp_timeout_s = float(self.config_manager.get('instance_hp_timeout', 30.0))
+            except Exception:
+                hp_timeout_s = 30.0
+            last_hp_seen_time = float(result.get('last_hp_seen_time', 0.0))
+            seconds_since_combat = max(0.0, now - last_hp_seen_time)
+            has_recent_combat = seconds_since_combat < hp_timeout_s
+
+            if has_recent_combat:
+                # Do not start instance token/teleport sequence if combat was flagged within timeout window
+                logger.info(
+                    f"Teleport blocked: combat seen {seconds_since_combat:.1f}s ago (< {hp_timeout_s:.0f}s timeout)"
+                )
+                return
+
             # Get instance token and teleport locations
             detector = self.detection_engine.instance_only_detector
             token_location = detector.get_instance_token_location()
@@ -609,20 +749,21 @@ class BotController:
             
             if token_location and teleport_location and self.action_manager:
                 # Check cooldown
-                now = time.time()
-                if now - self._instance_manager['last_teleport_time'] >= self._instance_manager['teleport_cooldown']:
-                    logger.info(f"Instance empty for {result.get('hp_timeout', 30)} seconds, teleporting to instance")
+                if now - mgr['last_teleport_time'] >= mgr['teleport_cooldown']:
+                    logger.info(
+                        f"No combat for {seconds_since_combat:.1f}s (>= {hp_timeout_s:.0f}s). Teleporting to instance."
+                    )
                     
                     # Click instance token
                     logger.info(f"Clicking instance token at ({token_location.x}, {token_location.y})")
-                    if self.action_manager.mouse_controller.move_and_click(token_location.x, token_location.y):
+                    if self.action_manager.mouse_controller.move_and_click(token_location.x, token_location.y, enforce_guard=False):
                         # Wait for token delay
                         time.sleep(token_delay)
                         
                         # Click teleport location
                         logger.info(f"Clicking teleport at ({teleport_location.x}, {teleport_location.y})")
-                        if self.action_manager.mouse_controller.move_and_click(teleport_location.x, teleport_location.y):
-                            self._instance_manager['last_teleport_time'] = now
+                        if self.action_manager.mouse_controller.move_and_click(teleport_location.x, teleport_location.y, enforce_guard=False):
+                            mgr['last_teleport_time'] = now
                             # Publish event
                             self.event_system.publish(EventType.INSTANCE_ENTERED, {
                                 'token_position': (token_location.x, token_location.y),
@@ -632,6 +773,16 @@ class BotController:
                             
                             # Reset combat status after teleporting
                             self.detection_engine.instance_only_detector.in_combat = False
+                            # Start post-teleport waiting window
+                            mgr['post_teleport_active'] = True
+                            mgr['post_teleport_wait_until'] = time.time() + hp_wait_s
+                            # Reset retries for a fresh sequence
+                            mgr['post_teleport_retry_count'] = 0
+                            logger.info(f"Waiting up to {hp_wait_s:.1f}s for HP bar to appear after teleport.")
+                        else:
+                            logger.warning("Teleport click failed (move_and_click returned False)")
+                    else:
+                        logger.warning("Token click failed (move_and_click returned False)")
 
     def _install_hotkeys(self):
         """Install a global F8 hotkey to toggle pause/resume."""

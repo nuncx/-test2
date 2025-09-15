@@ -42,8 +42,8 @@ class EnhancedColorEditor(QWidget):
         # Get initial color spec
         self.color_spec = self.config_manager.get_color_spec(color_key)
         if self.color_spec is None:
-            # Create default color spec
-            self.color_spec = ColorSpec((255, 0, 0))
+            # Create default color spec (rgb tuple + defaults)
+            self.color_spec = ColorSpec(rgb=(255, 0, 0))
         
         # Initialize UI
         self.init_ui()
@@ -140,12 +140,13 @@ class EnhancedColorEditor(QWidget):
     def update_ui_from_color_spec(self):
         """Update UI from color spec"""
         # Set color
-        if hasattr(self.color_spec, 'r') and hasattr(self.color_spec, 'g') and hasattr(self.color_spec, 'b'):
-            self.color_picker.set_color(QColor(self.color_spec.r, self.color_spec.g, self.color_spec.b))
+        if hasattr(self.color_spec, 'rgb'):
+            r, g, b = self.color_spec.rgb
+            self.color_picker.set_color(QColor(r, g, b))
         
         # Set tolerance
-        if hasattr(self.color_spec, 'tolerance'):
-            self.color_picker.set_tolerance(self.color_spec.tolerance)
+        if hasattr(self.color_spec, 'tol_rgb'):
+            self.color_picker.set_tolerance(self.color_spec.tol_rgb)
         
         # Set HSV settings
         if hasattr(self.color_spec, 'use_hsv'):
@@ -232,13 +233,10 @@ class EnhancedColorEditor(QWidget):
         """Update color spec from UI"""
         # Get color
         color = self.color_picker.get_color()
-        
-        # Create color spec
+        # Create color spec with expected dataclass fields
         color_spec = ColorSpec(
-            r=color.red(),
-            g=color.green(),
-            b=color.blue(),
-            tolerance=self.color_picker.get_tolerance()
+            rgb=(color.red(), color.green(), color.blue()),
+            tol_rgb=self.color_picker.get_tolerance()
         )
         
         # Set HSV settings

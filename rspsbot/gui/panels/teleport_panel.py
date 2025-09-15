@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 
 from ...core.config import Coordinate
-from ..components.screen_picker import PointPickerDialog
+from ..components.screen_picker import PointPickerDialog, ZoomPointPickerDialog
 from ...core.modules.teleport import TeleportLocation
 
 # Get module logger
@@ -24,7 +24,7 @@ class CoordinateSelector(QWidget):
     
     coordinateSelected = pyqtSignal(int, int)
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config_manager=None, bot_controller=None):
         """
         Initialize the coordinate selector
         
@@ -32,7 +32,8 @@ class CoordinateSelector(QWidget):
             parent: Parent widget
         """
         super().__init__(parent)
-        
+        self._config = config_manager
+        self._controller = bot_controller
         # Initialize UI
         self.init_ui()
     
@@ -56,11 +57,20 @@ class CoordinateSelector(QWidget):
         self.y_spin.setRange(0, 9999)
         self.y_spin.valueChanged.connect(self.on_coordinate_changed)
         main_layout.addWidget(self.y_spin)
-        
-        # Select button
+
+        # Buttons
+        btns = QVBoxLayout()
         self.select_button = QPushButton("Select")
+        self.select_button.setToolTip("Pick coordinates from a zoomable screenshot")
         self.select_button.clicked.connect(self.on_select_clicked)
-        main_layout.addWidget(self.select_button)
+        btns.addWidget(self.select_button)
+
+        self.test_button = QPushButton("Test Click")
+        self.test_button.setToolTip("Move and click at the selected coordinate")
+        self.test_button.clicked.connect(self.on_test_click)
+        btns.addWidget(self.test_button)
+
+        main_layout.addLayout(btns)
     
     def on_coordinate_changed(self):
         """Handle coordinate change"""
@@ -69,10 +79,40 @@ class CoordinateSelector(QWidget):
         self.coordinateSelected.emit(x, y)
     
     def on_select_clicked(self):
-        """Handle select button click"""
-        dialog = PointPickerDialog(self)
-        if dialog.exec_() == dialog.Accepted and dialog.selected_point:
-            self.set_coordinate(dialog.selected_point.x(), dialog.selected_point.y())
+        """Handle select button click using zoomable picker"""
+        try:
+            dialog = ZoomPointPickerDialog(self._config, self)
+            if dialog.exec_() == dialog.Accepted and dialog.selected_point:
+                x, y = dialog.selected_point
+                self.set_coordinate(x, y)
+        except Exception as e:
+            logger.error(f"Coordinate select error: {e}")
+
+    def on_test_click(self):
+        """Test click at selected coordinate using MouseController if available."""
+        x, y = self.get_coordinate()
+        if x <= 0 and y <= 0:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Test Click", "Please select a coordinate first.")
+            return
+        try:
+            controller = self._controller
+            if controller and getattr(controller, 'action_manager', None):
+                mc = controller.action_manager.mouse_controller
+                if mc:
+                    ok = mc.move_and_click(x, y)
+                    if not ok:
+                        logger.warning("MouseController click failed")
+                    return
+            # Fallback: use pyautogui directly
+            try:
+                import pyautogui
+                pyautogui.moveTo(x, y, duration=0.1)
+                pyautogui.click()
+            except Exception as e:
+                logger.error(f"Fallback click error: {e}")
+        except Exception as e:
+            logger.error(f"Test click error: {e}")
     
     def set_coordinate(self, x: int, y: int):
         """Set the coordinate values"""
