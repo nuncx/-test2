@@ -206,6 +206,20 @@ class CaptureService:
             roi_dict = roi
         
         return self.capture(roi_dict)
+
+    def capture_healthcheck(self, roi: Optional[Dict[str, int]] = None) -> Dict[str, float]:
+        """
+        Capture once and report basic stats to detect black/blank frames.
+
+        Returns a dict with mean, std, and nonzero_ratio to help detect if the
+        screen went black due to display off or locking.
+        """
+        frame = self.capture(roi or self.get_window_bbox())
+        # Compute statistics
+        mean_val = float(frame.mean()) if frame.size else 0.0
+        std_val = float(frame.std()) if frame.size else 0.0
+        nonzero_ratio = float((frame > 0).any(axis=2).mean()) if frame.size else 0.0
+        return {"mean": mean_val, "std": std_val, "nonzero_ratio": nonzero_ratio}
     
     def _get_cache_key(self, bbox: Dict[str, int]) -> str:
         """

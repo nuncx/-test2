@@ -237,6 +237,14 @@ class ConfigManager:
             "break_every_s": 180.0,
             "break_duration_s": 4.0,
             "max_runtime_s": 0.0,
+
+            # Power management
+            # Keep the system awake so the bot keeps running when the screen is off.
+            # If you want to also force the display to stay on (so Windows doesn't blank it),
+            # set keep_display_awake to True. For most users who want the monitor off but the
+            # PC awake, keep_display_awake should remain False and turn the monitor off physically.
+            "keep_awake_enabled": True,
+            "keep_display_awake": True,
             
             # Debug settings
             "debug_overlay": False,

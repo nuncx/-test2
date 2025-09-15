@@ -102,11 +102,14 @@ class PotionDialog(QWidget):
         # Cooldown
         cooldown_layout = QHBoxLayout()
         cooldown_layout.addWidget(QLabel("Cooldown:"))
-        
+
         self.cooldown_spin = QDoubleSpinBox()
-        self.cooldown_spin.setRange(0.1, 300.0)
+        self.cooldown_spin.setRange(0.1, 900.0)
+        self.cooldown_spin.setDecimals(2)
+        self.cooldown_spin.setSingleStep(0.1)
         self.cooldown_spin.setValue(30.0)
         self.cooldown_spin.setSuffix(" s")
+        self.cooldown_spin.setToolTip("Minimum seconds between uses of this potion.")
         cooldown_layout.addWidget(self.cooldown_spin)
         
         main_layout.addLayout(cooldown_layout)
@@ -114,9 +117,11 @@ class PotionDialog(QWidget):
         # Duration
         duration_layout = QHBoxLayout()
         duration_layout.addWidget(QLabel("Duration:"))
-        
+
         self.duration_spin = QDoubleSpinBox()
-        self.duration_spin.setRange(0.0, 600.0)
+        self.duration_spin.setRange(0.0, 1800.0)
+        self.duration_spin.setDecimals(2)
+        self.duration_spin.setSingleStep(0.1)
         self.duration_spin.setValue(0.0)
         self.duration_spin.setSuffix(" s")
         self.duration_spin.setSpecialValueText("Instant")
@@ -379,11 +384,14 @@ class PotionPanel(QWidget):
         # Combat potions
         combat_layout = QHBoxLayout()
         combat_layout.addWidget(QLabel("Combat Potion Interval:"))
-        
+
         self.combat_interval_spin = QDoubleSpinBox()
-        self.combat_interval_spin.setRange(0.0, 300.0)
+        self.combat_interval_spin.setRange(1.0, 3600.0)
+        self.combat_interval_spin.setDecimals(1)
+        self.combat_interval_spin.setSingleStep(1.0)
         self.combat_interval_spin.setValue(self.config_manager.get('combat_potion_interval', 60.0))
         self.combat_interval_spin.setSuffix(" s")
+        self.combat_interval_spin.setToolTip("Seconds between reapplying combat potion buffs.")
         self.combat_interval_spin.valueChanged.connect(self.on_combat_interval_changed)
         combat_layout.addWidget(self.combat_interval_spin)
         

@@ -2,6 +2,7 @@
 State management for RSPS Color Bot v3
 """
 import time
+import random
 import threading
 import logging
 from enum import Enum, auto
@@ -195,6 +196,13 @@ class BotController:
         self._last_monster_click_time: float = 0.0
         self._last_monster_click_pos: Optional[tuple] = None
 
+        # Power management: keep system awake while running
+        self._keep_awake = None
+
+        # Combat transition tracking (for post-combat delay)
+        self._was_in_combat: bool = False
+        self._post_combat_until: float = 0.0
+
         # Global hotkey (F8) to toggle pause/resume
         self._hotkey_listener_thread = threading.Thread(target=self._install_hotkeys, daemon=True)
         self._hotkey_listener_thread.start()
@@ -268,6 +276,21 @@ class BotController:
             # Start main thread
             self._main_thread = threading.Thread(target=self._main_loop, daemon=True)
             self._main_thread.start()
+
+            # Enable KeepAwake if configured
+            try:
+                if self.config_manager.get("keep_awake_enabled", True):
+                    from ...utils.power import KeepAwake
+                    self._keep_awake = KeepAwake(
+                        keep_display_awake=self.config_manager.get("keep_display_awake", False)
+                    )
+                    self._keep_awake.start()
+                    logger.info(
+                        "KeepAwake enabled (display_awake=%s)",
+                        self.config_manager.get("keep_display_awake", False),
+                    )
+            except Exception as e:
+                logger.warning(f"KeepAwake setup failed: {e}")
             
             # Publish event
             self.event_system.publish(EventType.STATE_CHANGED, {'state': self._state})
@@ -295,6 +318,15 @@ class BotController:
             self.event_system.publish(EventType.STATE_CHANGED, {'state': self._state})
             
             logger.info("Bot stopped")
+
+        # Disable KeepAwake outside the lock to avoid deadlocks on Windows
+        try:
+            if self._keep_awake is not None:
+                self._keep_awake.stop()
+                self._keep_awake = None
+                logger.info("KeepAwake disabled")
+        except Exception as e:
+            logger.debug(f"KeepAwake disable error: {e}")
     
     def pause(self):
         """Pause the bot"""
@@ -443,6 +475,28 @@ class BotController:
                 else:
                     logger.info(f"Monsters found: {len(monsters)}")
                 
+                # Detect transition: combat -> not in combat, then schedule post-combat delay
+                try:
+                    if self._was_in_combat and not in_combat:
+                        dmin = float(self.config_manager.get('post_combat_delay_min_s', 1.0))
+                        dmax = float(self.config_manager.get('post_combat_delay_max_s', 3.0))
+                        delay = dmin if dmax <= dmin else random.uniform(dmin, dmax)
+                        self._post_combat_until = time.time() + max(0.0, delay)
+                        logger.info(f"Post-combat delay scheduled: {delay:.2f}s (until {self._post_combat_until:.3f})")
+                except Exception as e:
+                    logger.debug(f"Post-combat scheduling error: {e}")
+                finally:
+                    self._was_in_combat = bool(in_combat)
+
+                # Compute remaining post-combat delay (for overlay/GUI indicator)
+                try:
+                    remaining_delay = max(0.0, getattr(self, '_post_combat_until', 0.0) - time.time())
+                    # Attach to result so visualization can show it
+                    result['post_combat_remaining_s'] = float(remaining_delay)
+                except Exception:
+                    # Non-fatal; just omit the field if anything goes wrong
+                    pass
+
                 # Publish detection event including full result for overlay/stats
                 self.event_system.publish(EventType.DETECTION_COMPLETED, {
                     'success': len(monsters) > 0,
@@ -451,7 +505,14 @@ class BotController:
                 })
                 
                 # Click target monster only when not in combat (HP bar not visible)
-                if (not in_combat) and monsters:
+                # Enforce post-combat delay: if still within delay, skip attacking
+                now_ts = time.time()
+                within_post_delay = now_ts < getattr(self, '_post_combat_until', 0.0)
+                if within_post_delay:
+                    remaining = self._post_combat_until - now_ts
+                    logger.info(f"Waiting post-combat delay: {remaining:.2f}s remaining")
+                
+                if (not in_combat) and monsters and (not within_post_delay):
                     try:
                         # Selection strategy: default closest-to-center; optional low-confidence: largest-area
                         low_enabled = bool(self.config_manager.get('low_confidence_click_enabled', True))

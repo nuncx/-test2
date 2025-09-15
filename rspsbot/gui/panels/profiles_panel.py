@@ -6,7 +6,7 @@ import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QListWidget, QLineEdit, QMessageBox, QInputDialog,
-    QFileDialog
+    QFileDialog, QApplication
 )
 from PyQt5.QtCore import Qt
 
@@ -204,6 +204,13 @@ class ProfilesPanel(QWidget):
             )
             
             if reply == QMessageBox.Yes:
+                # Flush any pending GUI edits to the config before saving
+                try:
+                    fw = QApplication.focusWidget()
+                    if fw is not None:
+                        fw.clearFocus()
+                except Exception:
+                    pass
                 # Save profile
                 success = self.config_manager.save_profile(profile_name)
                 
@@ -235,6 +242,13 @@ class ProfilesPanel(QWidget):
         )
         
         if ok and profile_name:
+            # Flush any pending GUI edits to the config before saving
+            try:
+                fw = QApplication.focusWidget()
+                if fw is not None:
+                    fw.clearFocus()
+            except Exception:
+                pass
             # Save profile
             success = self.config_manager.save_profile(profile_name)
             

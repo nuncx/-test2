@@ -103,18 +103,25 @@ class ControlPanel(QWidget):
         break_layout.addWidget(QLabel("Break Every:"))
         
         self.break_every_spin = QDoubleSpinBox()
-        self.break_every_spin.setRange(30, 600)
-        self.break_every_spin.setValue(self.config_manager.get('break_every_s', 180))
-        self.break_every_spin.setSuffix(" s")
+        # Display in minutes, 0.5 to 120 minutes
+        self.break_every_spin.setRange(0.5, 120.0)
+        # Convert stored seconds -> minutes for display
+        _break_every_s = float(self.config_manager.get('break_every_s', 180.0))
+        self.break_every_spin.setValue(max(0.5, _break_every_s / 60.0))
+        self.break_every_spin.setSuffix(" min")
         self.break_every_spin.valueChanged.connect(self.on_break_every_changed)
         break_layout.addWidget(self.break_every_spin)
         
         break_layout.addWidget(QLabel("Break Duration:"))
         
         self.break_duration_spin = QDoubleSpinBox()
-        self.break_duration_spin.setRange(1, 30)
-        self.break_duration_spin.setValue(self.config_manager.get('break_duration_s', 4))
-        self.break_duration_spin.setSuffix(" s")
+        # Display in minutes, allow fine-grained from 0.1 to 10 minutes
+        self.break_duration_spin.setRange(0.1, 10.0)
+        _break_dur_s = float(self.config_manager.get('break_duration_s', 4.0))
+        self.break_duration_spin.setValue(max(0.1, _break_dur_s / 60.0))
+        self.break_duration_spin.setDecimals(2)
+        self.break_duration_spin.setSingleStep(0.1)
+        self.break_duration_spin.setSuffix(" min")
         self.break_duration_spin.valueChanged.connect(self.on_break_duration_changed)
         break_layout.addWidget(self.break_duration_spin)
         
@@ -126,9 +133,11 @@ class ControlPanel(QWidget):
         runtime_layout.addWidget(QLabel("Max Runtime:"))
         
         self.max_runtime_spin = QDoubleSpinBox()
-        self.max_runtime_spin.setRange(0, 86400)  # 0 to 24 hours
-        self.max_runtime_spin.setValue(self.config_manager.get('max_runtime_s', 0))
-        self.max_runtime_spin.setSuffix(" s")
+        # Display in hours (0 = Unlimited), allow up to 48 hours
+        self.max_runtime_spin.setRange(0.0, 48.0)
+        _max_runtime_s = float(self.config_manager.get('max_runtime_s', 0.0) or 0.0)
+        self.max_runtime_spin.setValue(0.0 if _max_runtime_s <= 0 else _max_runtime_s / 3600.0)
+        self.max_runtime_spin.setSuffix(" h")
         self.max_runtime_spin.setSpecialValueText("Unlimited")
         self.max_runtime_spin.valueChanged.connect(self.on_max_runtime_changed)
         runtime_layout.addWidget(self.max_runtime_spin)
@@ -261,23 +270,26 @@ class ControlPanel(QWidget):
         self.config_manager.set('humanize_on', checked)
     
     def on_break_every_changed(self, value):
-        """Handle break every value change"""
-        logger.debug(f"Break every set to {value} seconds")
-        self.config_manager.set('break_every_s', value)
+        """Handle break every value change (displayed in minutes, store in seconds)"""
+        seconds = float(value) * 60.0
+        logger.debug(f"Break every set to {value} minutes ({seconds:.1f} seconds)")
+        self.config_manager.set('break_every_s', seconds)
     
     def on_break_duration_changed(self, value):
-        """Handle break duration value change"""
-        logger.debug(f"Break duration set to {value} seconds")
-        self.config_manager.set('break_duration_s', value)
+        """Handle break duration value change (displayed in minutes, store seconds)"""
+        seconds = float(value) * 60.0
+        logger.debug(f"Break duration set to {value} minutes ({seconds:.1f} seconds)")
+        self.config_manager.set('break_duration_s', seconds)
     
     def on_max_runtime_changed(self, value):
-        """Handle max runtime value change"""
-        if value == 0:
+        """Handle max runtime value change (displayed in hours; store seconds; 0=unlimited)"""
+        if float(value) <= 0.0:
             logger.debug("Max runtime set to unlimited")
+            self.config_manager.set('max_runtime_s', 0.0)
         else:
-            logger.debug(f"Max runtime set to {value} seconds")
-        
-        self.config_manager.set('max_runtime_s', value)
+            seconds = float(value) * 3600.0
+            logger.debug(f"Max runtime set to {value} hours ({seconds:.0f} seconds)")
+            self.config_manager.set('max_runtime_s', seconds)
     
     def on_debug_overlay_toggled(self, checked):
         """Handle debug overlay checkbox toggle"""

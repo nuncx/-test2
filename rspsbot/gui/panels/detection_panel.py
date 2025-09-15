@@ -784,12 +784,14 @@ class DetectionPanel(QWidget):
         scan_layout = QHBoxLayout()
         
         scan_layout.addWidget(QLabel("Scan Interval:"))
-        
+
         self.scan_interval_spin = QDoubleSpinBox()
-        self.scan_interval_spin.setRange(0.05, 1.0)
-        self.scan_interval_spin.setSingleStep(0.05)
+        self.scan_interval_spin.setRange(0.01, 2.0)
+        self.scan_interval_spin.setDecimals(3)
+        self.scan_interval_spin.setSingleStep(0.01)
         self.scan_interval_spin.setValue(self.config_manager.get('scan_interval', 0.2))
         self.scan_interval_spin.setSuffix(" s")
+        self.scan_interval_spin.setToolTip("Seconds between detection scans. Lower = faster updates but higher CPU usage.")
         self.scan_interval_spin.valueChanged.connect(self.on_scan_interval_changed)
         scan_layout.addWidget(self.scan_interval_spin)
         

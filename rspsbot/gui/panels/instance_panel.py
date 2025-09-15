@@ -163,11 +163,14 @@ class InstancePanel(QWidget):
         # Delay
         delay_layout = QHBoxLayout()
         delay_layout.addWidget(QLabel("Delay:"))
-        
+
         self.token_delay_spin = QDoubleSpinBox()
-        self.token_delay_spin.setRange(0.1, 5.0)
+        self.token_delay_spin.setRange(0.05, 10.0)
+        self.token_delay_spin.setDecimals(2)
+        self.token_delay_spin.setSingleStep(0.05)
         self.token_delay_spin.setValue(1.0)
         self.token_delay_spin.setSuffix(" s")
+        self.token_delay_spin.setToolTip("Pause after clicking teleport before using the instance token.")
         delay_layout.addWidget(self.token_delay_spin)
         
         delay_layout.addStretch()
@@ -207,11 +210,14 @@ class InstancePanel(QWidget):
         # Aggro duration
         duration_layout = QHBoxLayout()
         duration_layout.addWidget(QLabel("Duration:"))
-        
+
         self.aggro_duration_spin = QDoubleSpinBox()
-        self.aggro_duration_spin.setRange(10.0, 600.0)
+        self.aggro_duration_spin.setRange(10.0, 3600.0)
+        self.aggro_duration_spin.setDecimals(1)
+        self.aggro_duration_spin.setSingleStep(1.0)
         self.aggro_duration_spin.setValue(300.0)
         self.aggro_duration_spin.setSuffix(" s")
+        self.aggro_duration_spin.setToolTip("Expected duration of aggro potion effect.")
         duration_layout.addWidget(self.aggro_duration_spin)
         
         duration_layout.addStretch()

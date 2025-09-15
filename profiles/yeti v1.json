@@ -1,6 +1,6 @@
 {
   "window_title": "Velador - Donikk",
-  "scan_interval": 0.2,
+  "scan_interval": 1.0,
   "search_step": 1,
   "detect_tiles": true,
   "detect_monsters": true,
@@ -9,7 +9,7 @@
   "around_tile_radius": 80,
   "use_precise_mode": true,
   "monster_scan_step": 1,
-  "enable_monster_full_fallback": false,
+  "enable_monster_full_fallback": true,
   "adaptive_search": true,
   "adaptive_monster_detection": true,
   "monster_sat_min": 40,
@@ -47,30 +47,6 @@
     },
     {
       "rgb": [
-        192,
-        88,
-        68
-      ],
-      "tol_rgb": 35,
-      "use_hsv": true,
-      "tol_h": 14,
-      "tol_s": 70,
-      "tol_v": 70
-    },
-    {
-      "rgb": [
-        70,
-        216,
-        222
-      ],
-      "tol_rgb": 35,
-      "use_hsv": true,
-      "tol_h": 14,
-      "tol_s": 70,
-      "tol_v": 70
-    },
-    {
-      "rgb": [
         91,
         172,
         194
@@ -83,9 +59,33 @@
     },
     {
       "rgb": [
-        38,
-        117,
-        152
+        214,
+        96,
+        54
+      ],
+      "tol_rgb": 35,
+      "use_hsv": true,
+      "tol_h": 14,
+      "tol_s": 70,
+      "tol_v": 70
+    },
+    {
+      "rgb": [
+        206,
+        94,
+        53
+      ],
+      "tol_rgb": 35,
+      "use_hsv": true,
+      "tol_h": 14,
+      "tol_s": 70,
+      "tol_v": 70
+    },
+    {
+      "rgb": [
+        104,
+        213,
+        229
       ],
       "tol_rgb": 35,
       "use_hsv": true,
@@ -106,23 +106,18 @@
     "tol_s": 30,
     "tol_v": 30
   },
-  "search_roi": {
-    "left": 507,
-    "top": 336,
-    "width": 515,
-    "height": 330
-  },
+  "search_roi": null,
   "hpbar_roi": {
-    "left": 517,
-    "top": 363,
-    "width": 126,
-    "height": 48
+    "left": 323,
+    "top": 373,
+    "width": 127,
+    "height": 33
   },
   "hpbar_detect_enabled": true,
   "hpbar_min_area": 50,
   "hpbar_min_pixel_matches": 150,
-  "post_combat_delay_min_s": 4.0,
-  "post_combat_delay_max_s": 4.0,
+  "post_combat_delay_min_s": 5.0,
+  "post_combat_delay_max_s": 6.0,
   "combat_not_seen_timeout_s": 10.0,
   "combat_leave_immediately": true,
   "skip_detection_when_in_combat": true,
@@ -147,10 +142,12 @@
   "low_confidence_click_enabled": false,
   "low_confidence_area_threshold": 220.0,
   "low_conf_min_count": 3,
-  "humanize_on": false,
-  "break_every_s": 180.0,
+  "humanize_on": true,
+  "break_every_s": 600.0,
   "break_duration_s": 4.0,
   "max_runtime_s": 0.0,
+  "keep_awake_enabled": true,
+  "keep_display_awake": true,
   "debug_overlay": false,
   "overlay_mode": "tile",
   "show_overlay_counts": true,

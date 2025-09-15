@@ -40,6 +40,7 @@ class DebugOverlayWindow(QWidget):
         self._monsters: List[Dict[str, Any]] = []
         self._in_combat: bool = False
         self._hp_seen: bool = False
+        self._post_combat_remaining_s: float = 0.0
 
         # Proxy for cross-thread event delivery
         self._proxy = _OverlayProxy(self)
@@ -94,6 +95,7 @@ class DebugOverlayWindow(QWidget):
             self._monsters = result.get('monsters', [])
             self._in_combat = bool(result.get('in_combat', False))
             self._hp_seen = bool(result.get('hp_seen', False))
+            self._post_combat_remaining_s = float(result.get('post_combat_remaining_s', 0.0) or 0.0)
             self.update()
         except Exception as e:
             logger.error(f"Overlay update error: {e}")
@@ -149,6 +151,13 @@ class DebugOverlayWindow(QWidget):
                 self._draw_counts_label(painter, roi_to_draw, tiles_count, monsters_count, offset=(off_x, off_y))
             except Exception:
                 pass
+
+        # Draw remaining post-combat delay if any
+        try:
+            if self._post_combat_remaining_s and self._post_combat_remaining_s > 0.01:
+                self._draw_delay_label(painter, roi_to_draw, self._post_combat_remaining_s, offset=(off_x, off_y))
+        except Exception:
+            pass
 
         painter.end()
 
@@ -220,6 +229,31 @@ class DebugOverlayWindow(QWidget):
         painter.drawRect(x - 5, y - h + 5, w, h)
         # Text
         painter.setPen(QColor(255, 255, 255, 230))
+        painter.drawText(x, y, text)
+
+    def _draw_delay_label(self, painter: QPainter, roi: Dict[str, int], remaining_s: float, offset: Tuple[int, int] = (0, 0)):
+        # Compose label text
+        text = f"Wait: {remaining_s:.1f}s"
+        # Position: below counts label (top-left inside ROI) with margin
+        ox, oy = offset
+        x = roi['left'] - ox + 8
+        y = roi['top'] - oy + 40  # a bit lower than counts label default 20
+        # Measure text
+        font = QFont()
+        font.setPointSize(10)
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        w = metrics.horizontalAdvance(text) + 10
+        h = metrics.height() + 6
+        # Background box with amber color to stand out
+        bg_color = QColor(60, 40, 0, 140)
+        pen = QPen(QColor(255, 220, 120, 220))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.setBrush(bg_color)
+        painter.drawRect(x - 5, y - h + 5, w, h)
+        # Text
+        painter.setPen(QColor(255, 220, 120, 240))
         painter.drawText(x, y, text)
 
     # ---- Visibility / lifecycle ----

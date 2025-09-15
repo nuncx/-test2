@@ -114,8 +114,9 @@ class CombatPanel(QWidget):
         
         post_combat_layout.addWidget(QLabel("Post-Combat Delay Min:"), 0, 0)
         self.post_combat_delay_min_spin = QDoubleSpinBox()
-        self.post_combat_delay_min_spin.setRange(0.1, 10.0)
-        self.post_combat_delay_min_spin.setSingleStep(0.1)
+        self.post_combat_delay_min_spin.setRange(0.1, 30.0)
+        self.post_combat_delay_min_spin.setDecimals(2)
+        self.post_combat_delay_min_spin.setSingleStep(0.05)
         self.post_combat_delay_min_spin.setValue(self.config_manager.get('post_combat_delay_min_s', 1.0))
         self.post_combat_delay_min_spin.setSuffix(" s")
         self.post_combat_delay_min_spin.valueChanged.connect(self.on_post_combat_delay_min_changed)
@@ -123,8 +124,9 @@ class CombatPanel(QWidget):
         
         post_combat_layout.addWidget(QLabel("Post-Combat Delay Max:"), 1, 0)
         self.post_combat_delay_max_spin = QDoubleSpinBox()
-        self.post_combat_delay_max_spin.setRange(0.1, 10.0)
-        self.post_combat_delay_max_spin.setSingleStep(0.1)
+        self.post_combat_delay_max_spin.setRange(0.1, 30.0)
+        self.post_combat_delay_max_spin.setDecimals(2)
+        self.post_combat_delay_max_spin.setSingleStep(0.05)
         self.post_combat_delay_max_spin.setValue(self.config_manager.get('post_combat_delay_max_s', 3.0))
         self.post_combat_delay_max_spin.setSuffix(" s")
         self.post_combat_delay_max_spin.valueChanged.connect(self.on_post_combat_delay_max_changed)
@@ -132,7 +134,8 @@ class CombatPanel(QWidget):
         
         post_combat_layout.addWidget(QLabel("Combat Not Seen Timeout:"), 2, 0)
         self.combat_timeout_spin = QDoubleSpinBox()
-        self.combat_timeout_spin.setRange(1.0, 30.0)
+        self.combat_timeout_spin.setRange(1.0, 120.0)
+        self.combat_timeout_spin.setDecimals(1)
         self.combat_timeout_spin.setSingleStep(0.5)
         self.combat_timeout_spin.setValue(self.config_manager.get('combat_not_seen_timeout_s', 10.0))
         self.combat_timeout_spin.setSuffix(" s")
@@ -165,7 +168,8 @@ class CombatPanel(QWidget):
         
         cam_settings_layout.addWidget(QLabel("Hold Time:"), 0, 0)
         self.cam_adjust_hold_spin = QDoubleSpinBox()
-        self.cam_adjust_hold_spin.setRange(0.01, 0.5)
+        self.cam_adjust_hold_spin.setRange(0.01, 1.0)
+        self.cam_adjust_hold_spin.setDecimals(3)
         self.cam_adjust_hold_spin.setSingleStep(0.01)
         self.cam_adjust_hold_spin.setValue(self.config_manager.get('cam_adjust_hold_s', 0.08))
         self.cam_adjust_hold_spin.setSuffix(" s")
@@ -174,7 +178,8 @@ class CombatPanel(QWidget):
         
         cam_settings_layout.addWidget(QLabel("Gap Time:"), 1, 0)
         self.cam_adjust_gap_spin = QDoubleSpinBox()
-        self.cam_adjust_gap_spin.setRange(0.01, 0.5)
+        self.cam_adjust_gap_spin.setRange(0.01, 1.0)
+        self.cam_adjust_gap_spin.setDecimals(3)
         self.cam_adjust_gap_spin.setSingleStep(0.01)
         self.cam_adjust_gap_spin.setValue(self.config_manager.get('cam_adjust_gap_s', 0.03))
         self.cam_adjust_gap_spin.setSuffix(" s")
@@ -195,7 +200,8 @@ class CombatPanel(QWidget):
         
         micro_layout.addWidget(QLabel("Micro Hold Time:"), 1, 0)
         self.micro_adjust_hold_spin = QDoubleSpinBox()
-        self.micro_adjust_hold_spin.setRange(0.01, 0.5)
+        self.micro_adjust_hold_spin.setRange(0.01, 1.0)
+        self.micro_adjust_hold_spin.setDecimals(3)
         self.micro_adjust_hold_spin.setSingleStep(0.01)
         self.micro_adjust_hold_spin.setValue(self.config_manager.get('micro_adjust_hold_s', 0.04))
         self.micro_adjust_hold_spin.setSuffix(" s")
@@ -204,7 +210,8 @@ class CombatPanel(QWidget):
         
         micro_layout.addWidget(QLabel("Micro Gap Time:"), 2, 0)
         self.micro_adjust_gap_spin = QDoubleSpinBox()
-        self.micro_adjust_gap_spin.setRange(0.01, 0.5)
+        self.micro_adjust_gap_spin.setRange(0.01, 1.0)
+        self.micro_adjust_gap_spin.setDecimals(3)
         self.micro_adjust_gap_spin.setSingleStep(0.01)
         self.micro_adjust_gap_spin.setValue(self.config_manager.get('micro_adjust_gap_s', 0.03))
         self.micro_adjust_gap_spin.setSuffix(" s")
