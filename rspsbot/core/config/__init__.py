@@ -352,6 +352,14 @@ class ConfigManager:
             "emergency_teleport_threshold": 60,
             # Logging/throttling for instance status lines
             "instance_status_log_interval": 1.0,
+            
+            # ROI expansion settings
+            "roi_max_expansion": 3,  # Maximum expansion levels
+            "roi_expansion_factor": 1.2,  # Multiplier for each expansion level
+            
+            # Lab color matching settings (enhanced defaults)
+            "combat_lab_tolerance": 15,  # Default Lab tolerance for combat style detection
+            "weapon_lab_tolerance": 10,  # Default Lab tolerance for weapon detection
         }
     
     def get(self, key: str, default: Any = None) -> Any:

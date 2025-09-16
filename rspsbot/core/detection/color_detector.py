@@ -44,8 +44,8 @@ def build_mask_precise_small(
     """
     Build a stricter mask for small ROIs:
     - Base HSV∩RGB precise mask
+    - Apply Lab ΔE intersection (always enabled with default tolerance)
     - Apply S/V minima gating (s >= combat_sat_min, v >= combat_val_min)
-    - Apply Lab ΔE intersection if configured (combat_lab_tolerance > 0)
     - Apply tunable morphology (combat_morph_open_iters/close)
     """
     small = img_bgr[::step, ::step] if step > 1 else img_bgr
@@ -53,10 +53,22 @@ def build_mask_precise_small(
     # Base precise mask (HSV∩RGB)
     mask, _ = build_mask(img_bgr, color_spec, step=step, precise=True, min_area=0)
 
+    # Lab ΔE filtering (ALWAYS apply for more accurate color matching)
+    try:
+        # Default to 15 if not specified, which is a good middle ground
+        lab_thr = float((config or {}).get('combat_lab_tolerance', 15))
+        if lab_thr > 0:
+            r, g, b = int(color_spec.rgb[0]), int(color_spec.rgb[1]), int(color_spec.rgb[2])
+            lab_mask = _lab_delta_e_mask(small, (r, g, b), lab_thr)
+            mask = cv2.bitwise_and(mask, lab_mask)
+    except Exception:
+        pass
+
     # HSV S/V gating
     try:
-        sat_min = int((config or {}).get('combat_sat_min', 40))
-        val_min = int((config or {}).get('combat_val_min', 40))
+        # Increased default values for better filtering of gray/dark colors
+        sat_min = int((config or {}).get('combat_sat_min', 50))
+        val_min = int((config or {}).get('combat_val_min', 50))
         if sat_min > 0 or val_min > 0:
             hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
             s = hsv[:, :, 1]
@@ -68,20 +80,10 @@ def build_mask_precise_small(
     except Exception:
         pass
 
-    # Lab ΔE intersection
-    try:
-        lab_thr = float((config or {}).get('combat_lab_tolerance', 0))
-        if lab_thr and lab_thr > 0:
-            r, g, b = int(color_spec.rgb[0]), int(color_spec.rgb[1]), int(color_spec.rgb[2])
-            lab_mask = _lab_delta_e_mask(small, (r, g, b), lab_thr)
-            mask = cv2.bitwise_and(mask, lab_mask)
-    except Exception:
-        pass
-
     # Morphology
     try:
         open_it = int((config or {}).get('combat_morph_open_iters', 1))
-        close_it = int((config or {}).get('combat_morph_close_iters', 1))
+        close_it = int((config or {}).get('combat_morph_close_iters', 2))  # Increased default to 2
         kernel = np.ones((3, 3), np.uint8)
         if open_it > 0:
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=open_it)
