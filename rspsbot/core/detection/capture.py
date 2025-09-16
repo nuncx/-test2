@@ -204,7 +204,35 @@ class CaptureService:
             roi_dict = roi.to_dict()
         else:
             roi_dict = roi
-        
+
+        # Normalize ROI coordinates to absolute screen space.
+        # If ROI appears to be client-relative (i.e., left/top within window bounds),
+        # translate it by the current focused window bbox so it remains correct when the
+        # window moves. If it already looks absolute (falls within window's absolute range),
+        # leave it as-is.
+        try:
+            bbox = self.get_window_bbox()
+            l, t, w, h = int(roi_dict.get('left', 0)), int(roi_dict.get('top', 0)), int(roi_dict.get('width', 0)), int(roi_dict.get('height', 0))
+            mode = str(roi_dict.get('mode', 'absolute'))
+            # Heuristic: treat as absolute if coordinates lie within the absolute window rectangle
+            within_abs_window = (
+                l >= bbox['left'] - 2 and l <= bbox['left'] + bbox['width'] + 2 and
+                t >= bbox['top'] - 2 and t <= bbox['top'] + bbox['height'] + 2
+            )
+            # Treat as relative if clearly within client area dimensions
+            looks_relative = (l < bbox['width'] and t < bbox['height'] and w <= bbox['width'] and h <= bbox['height'])
+            if mode == 'relative' or (not within_abs_window and looks_relative):
+                roi_dict = {
+                    'left': bbox['left'] + l,
+                    'top': bbox['top'] + t,
+                    'width': w,
+                    'height': h,
+                    'mode': 'absolute'
+                }
+        except Exception:
+            # Fallback: use as-is
+            pass
+
         return self.capture(roi_dict)
     
     def _get_cache_key(self, bbox: Dict[str, int]) -> str:

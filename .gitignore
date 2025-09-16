@@ -54,3 +54,5 @@ outputs/
 profiles/*.json
 !profiles/README.md
 !profiles/.gitkeep
+# Allow sanitized examples under a dedicated folder
+!profiles/examples/**

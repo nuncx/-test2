@@ -75,7 +75,7 @@ class ColorButton(QPushButton):
     def on_clicked(self):
         """Handle button click"""
         # Open color dialog
-        color = QColorDialog.getColor(self.color, self.parent(), "Select Color")
+        color = QColorDialog.getColor(self.color, self, "Select Color")
         
         # Update color if valid
         if color.isValid():
@@ -917,18 +917,97 @@ class DetectionPanel(QWidget):
         
         monster_layout.addLayout(monster_step_layout)
         
+        # Advanced monster filters
+        adv_group = QGroupBox("Advanced Monster Filters")
+        adv_layout = QGridLayout(adv_group)
+
+        # S/V gating
+        adv_layout.addWidget(QLabel("Min Saturation:"), 0, 0)
+        self.mon_sat_spin = QSpinBox()
+        self.mon_sat_spin.setRange(0, 255)
+        self.mon_sat_spin.setValue(self.config_manager.get('monster_sat_min', 40))
+        self.mon_sat_spin.valueChanged.connect(self.on_mon_sat_changed)
+        adv_layout.addWidget(self.mon_sat_spin, 0, 1)
+
+        adv_layout.addWidget(QLabel("Min Value:"), 0, 2)
+        self.mon_val_spin = QSpinBox()
+        self.mon_val_spin.setRange(0, 255)
+        self.mon_val_spin.setValue(self.config_manager.get('monster_val_min', 40))
+        self.mon_val_spin.valueChanged.connect(self.on_mon_val_changed)
+        adv_layout.addWidget(self.mon_val_spin, 0, 3)
+
+        # Exclude tile color & dilate
+        self.exclude_tile_checkbox = QCheckBox("Exclude tile color from monster mask")
+        self.exclude_tile_checkbox.setChecked(self.config_manager.get('monster_exclude_tile_color', True))
+        self.exclude_tile_checkbox.toggled.connect(self.on_exclude_tile_toggled)
+        adv_layout.addWidget(self.exclude_tile_checkbox, 1, 0, 1, 3)
+
+        adv_layout.addWidget(QLabel("Tile exclude dilate iters:"), 1, 3)
+        self.tile_dilate_spin = QSpinBox()
+        self.tile_dilate_spin.setRange(0, 6)
+        self.tile_dilate_spin.setValue(self.config_manager.get('monster_exclude_tile_dilate', 1))
+        self.tile_dilate_spin.valueChanged.connect(self.on_tile_dilate_changed)
+        adv_layout.addWidget(self.tile_dilate_spin, 1, 4)
+
+        # Morphology iters
+        adv_layout.addWidget(QLabel("Open iters:"), 2, 0)
+        self.morph_open_spin = QSpinBox()
+        self.morph_open_spin.setRange(0, 6)
+        self.morph_open_spin.setValue(self.config_manager.get('monster_morph_open_iters', 1))
+        self.morph_open_spin.valueChanged.connect(self.on_morph_open_changed)
+        adv_layout.addWidget(self.morph_open_spin, 2, 1)
+
+        adv_layout.addWidget(QLabel("Close iters:"), 2, 2)
+        self.morph_close_spin = QSpinBox()
+        self.morph_close_spin.setRange(0, 6)
+        self.morph_close_spin.setValue(self.config_manager.get('monster_morph_close_iters', 2))
+        self.morph_close_spin.valueChanged.connect(self.on_morph_close_changed)
+        adv_layout.addWidget(self.morph_close_spin, 2, 3)
+
+        # Lab assist
+        self.lab_assist_checkbox = QCheckBox("Enable Lab assist")
+        self.lab_assist_checkbox.setToolTip("Loosen detection by also accepting pixels close in Lab space (DeltaE).")
+        self.lab_assist_checkbox.setChecked(self.config_manager.get('monster_use_lab_assist', False))
+        self.lab_assist_checkbox.toggled.connect(self.on_lab_assist_toggled)
+        adv_layout.addWidget(self.lab_assist_checkbox, 3, 0, 1, 3)
+
+        adv_layout.addWidget(QLabel("Lab tolerance (ΔE76):"), 3, 3)
+        self.lab_tol_spin = QSpinBox()
+        self.lab_tol_spin.setRange(5, 80)
+        self.lab_tol_spin.setValue(self.config_manager.get('monster_lab_tolerance', 22))
+        self.lab_tol_spin.valueChanged.connect(self.on_lab_tol_changed)
+        adv_layout.addWidget(self.lab_tol_spin, 3, 4)
+
+        monster_layout.addWidget(adv_group)
+
+        # Persistence group
+        persist_group = QGroupBox("Detection Persistence")
+        persist_layout = QGridLayout(persist_group)
+        persist_layout.addWidget(QLabel("Tile persist (ms):"), 0, 0)
+        self.tile_persist_spin = QSpinBox()
+        self.tile_persist_spin.setRange(0, 2000)
+        self.tile_persist_spin.setValue(self.config_manager.get('tile_persistence_ms', 300))
+        self.tile_persist_spin.valueChanged.connect(self.on_tile_persist_changed)
+        persist_layout.addWidget(self.tile_persist_spin, 0, 1)
+
+        persist_layout.addWidget(QLabel("Monster persist (ms):"), 0, 2)
+        self.mon_persist_spin = QSpinBox()
+        self.mon_persist_spin.setRange(0, 2000)
+        self.mon_persist_spin.setValue(self.config_manager.get('monster_persistence_ms', 250))
+        self.mon_persist_spin.valueChanged.connect(self.on_mon_persist_changed)
+        persist_layout.addWidget(self.mon_persist_spin, 0, 3)
+
+        monster_layout.addWidget(persist_group)
+
         # Enable monster full fallback
         fallback_layout = QHBoxLayout()
-        
         self.monster_fallback_checkbox = QCheckBox("Enable Monster Full Fallback")
         self.monster_fallback_checkbox.setChecked(self.config_manager.get('enable_monster_full_fallback', False))
         self.monster_fallback_checkbox.toggled.connect(self.on_monster_fallback_toggled)
         fallback_layout.addWidget(self.monster_fallback_checkbox)
-        
         fallback_layout.addStretch()
-        
         monster_layout.addLayout(fallback_layout)
-        
+
         # Add monster group to general layout
         general_layout.addWidget(monster_group)
 
@@ -1105,6 +1184,46 @@ class DetectionPanel(QWidget):
         """Handle monster fallback toggle"""
         logger.debug(f"Monster full fallback {'enabled' if checked else 'disabled'}")
         self.config_manager.set('enable_monster_full_fallback', checked)
+
+    def on_mon_sat_changed(self, value: int):
+        logger.debug(f"Monster min saturation set to {value}")
+        self.config_manager.set('monster_sat_min', int(value))
+
+    def on_mon_val_changed(self, value: int):
+        logger.debug(f"Monster min value set to {value}")
+        self.config_manager.set('monster_val_min', int(value))
+
+    def on_exclude_tile_toggled(self, checked: bool):
+        logger.debug(f"Exclude tile color from monster mask: {'on' if checked else 'off'}")
+        self.config_manager.set('monster_exclude_tile_color', bool(checked))
+
+    def on_tile_dilate_changed(self, value: int):
+        logger.debug(f"Tile exclude dilate iters set to {value}")
+        self.config_manager.set('monster_exclude_tile_dilate', int(value))
+
+    def on_morph_open_changed(self, value: int):
+        logger.debug(f"Monster morph open iters set to {value}")
+        self.config_manager.set('monster_morph_open_iters', int(value))
+
+    def on_morph_close_changed(self, value: int):
+        logger.debug(f"Monster morph close iters set to {value}")
+        self.config_manager.set('monster_morph_close_iters', int(value))
+
+    def on_lab_assist_toggled(self, checked: bool):
+        logger.debug(f"Monster Lab assist {'enabled' if checked else 'disabled'}")
+        self.config_manager.set('monster_use_lab_assist', bool(checked))
+
+    def on_lab_tol_changed(self, value: int):
+        logger.debug(f"Monster Lab tolerance set to {value}")
+        self.config_manager.set('monster_lab_tolerance', int(value))
+
+    def on_tile_persist_changed(self, value: int):
+        logger.debug(f"Tile persistence set to {value} ms")
+        self.config_manager.set('tile_persistence_ms', int(value))
+
+    def on_mon_persist_changed(self, value: int):
+        logger.debug(f"Monster persistence set to {value} ms")
+        self.config_manager.set('monster_persistence_ms', int(value))
 
     def on_lowconf_enabled_toggled(self, checked):
         """Handle low-confidence mode toggle"""

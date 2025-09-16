@@ -213,11 +213,14 @@ class AdvancedROISelector(QWidget):
     
     def on_roi_changed(self):
         """Handle ROI value change"""
+        # Preserve existing mode if we have a current ROI with mode, default to 'absolute'
+        current_mode = getattr(self.roi_preview.roi, 'mode', 'absolute') if getattr(self.roi_preview, 'roi', None) else 'absolute'
         roi = ROI(
             left=self.left_spin.value(),
             top=self.top_spin.value(),
             width=self.width_spin.value(),
-            height=self.height_spin.value()
+            height=self.height_spin.value(),
+            mode=current_mode
         )
         
         # Update preview
@@ -230,18 +233,20 @@ class AdvancedROISelector(QWidget):
         """Handle select button click"""
         if self.config_manager:
             dialog = ZoomRoiPickerDialog(self.config_manager, self)
-            if dialog.exec_() == dialog.Accepted and dialog.result_rect:
+            if dialog.exec_() == dialog.Accepted and (dialog.result_rect is not None) and (not dialog.result_rect.isNull()):
                 rect = dialog.result_rect
+                # Store ROI relative to focused window so it remains valid if the window moves
                 self.set_roi(ROI(
                     left=rect.left(),
                     top=rect.top(),
                     width=rect.width(),
-                    height=rect.height()
+                    height=rect.height(),
+                    mode='relative'
                 ))
     
     def on_clear_clicked(self):
         """Handle clear button click"""
-        self.set_roi(ROI(0, 0, 100, 100))
+        self.set_roi(ROI(0, 0, 100, 100, mode='absolute'))
     
     def set_roi(self, roi):
         """
@@ -281,9 +286,12 @@ class AdvancedROISelector(QWidget):
         Returns:
             ROI: Current ROI
         """
+        # Keep current mode if known
+        current_mode = getattr(self.roi_preview.roi, 'mode', 'absolute') if getattr(self.roi_preview, 'roi', None) else 'absolute'
         return ROI(
             left=self.left_spin.value(),
             top=self.top_spin.value(),
             width=self.width_spin.value(),
-            height=self.height_spin.value()
+            height=self.height_spin.value(),
+            mode=current_mode
         )

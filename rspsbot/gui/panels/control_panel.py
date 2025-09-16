@@ -4,9 +4,9 @@ Control panel for RSPS Color Bot v3
 import logging
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QGroupBox, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox
+    QGroupBox, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox, QSlider
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 
 # Get module logger
 logger = logging.getLogger('rspsbot.gui.panels.control_panel')
@@ -100,6 +100,13 @@ class ControlPanel(QWidget):
         self.enable_teleport_checkbox.toggled.connect(lambda v: self.config_manager.set('enable_teleport', v))
         toggles_layout.addWidget(self.enable_teleport_checkbox)
 
+        # Mirror toggle for Combat Style enforcement (convenience in main tab)
+        self.enable_combat_style_checkbox = QCheckBox("Enable Combat Style")
+        self.enable_combat_style_checkbox.setToolTip("When enabled, the bot will detect current style from Style ROI and click its linked weapon color in the Weapon ROI before attacking.")
+        self.enable_combat_style_checkbox.setChecked(bool(self.config_manager.get('combat_style_enforce', False)))
+        self.enable_combat_style_checkbox.toggled.connect(lambda v: self.config_manager.set('combat_style_enforce', bool(v)))
+        toggles_layout.addWidget(self.enable_combat_style_checkbox)
+
         toggles_layout.addStretch()
         settings_layout.addLayout(toggles_layout)
 
@@ -110,9 +117,31 @@ class ControlPanel(QWidget):
         self.humanize_checkbox.setChecked(self.config_manager.get('humanize_on', True))
         self.humanize_checkbox.toggled.connect(self.on_humanize_toggled)
         humanize_layout.addWidget(self.humanize_checkbox)
-        
+        # Jitter controls
+        self.jitter_checkbox = QCheckBox("Randomize breaks")
+        self.jitter_checkbox.setToolTip("Randomly vary break interval and duration by a percent")
+        self.jitter_checkbox.setChecked(self.config_manager.get('humanize_jitter_enabled', True))
+        self.jitter_checkbox.toggled.connect(self.on_jitter_enabled_toggled)
+        humanize_layout.addWidget(self.jitter_checkbox)
+
+        self.jitter_slider = QSlider(Qt.Orientation.Horizontal)
+        self.jitter_slider.setRange(0, 30)  # 0%..30%
+        self.jitter_slider.setTickInterval(5)
+        self.jitter_slider.setTickPosition(QSlider.TicksBelow)
+        try:
+            jp = int(float(self.config_manager.get('humanize_jitter_percent', 10.0)))
+        except Exception:
+            jp = 10
+        jp = max(0, min(30, jp))
+        self.jitter_slider.setValue(jp)
+        self.jitter_slider.valueChanged.connect(self.on_jitter_changed)
+        self.jitter_slider.setEnabled(self.jitter_checkbox.isChecked())
+        self.jitter_label = QLabel(f"Jitter: ±{jp}%")
+        humanize_layout.addWidget(self.jitter_label)
+        humanize_layout.addWidget(self.jitter_slider)
+
         settings_layout.addLayout(humanize_layout)
-        
+
         # Break settings
         break_layout = QVBoxLayout()
         
@@ -129,38 +158,61 @@ class ControlPanel(QWidget):
         break_every_layout.addStretch()
         break_layout.addLayout(break_every_layout)
         
-        # Break duration
+        # Break duration (minutes)
         break_duration_layout = QHBoxLayout()
         break_duration_layout.addWidget(QLabel("Break Duration:"))
-        
-        self.break_duration_selector = TimeSelector(label="", initial_seconds=self.config_manager.get('break_duration_s', 4))
-        self.break_duration_selector.setToolTip("Duration of each break")
-        self.break_duration_selector.timeChanged.connect(self.on_break_duration_changed)
-        break_duration_layout.addWidget(self.break_duration_selector)
+
+        self.break_duration_minutes_spin = QSpinBox()
+        self.break_duration_minutes_spin.setRange(0, 1000)
+        self.break_duration_minutes_spin.setSuffix(" min")
+        self.break_duration_minutes_spin.setToolTip("Duration of each break in minutes")
+        try:
+            _bd_secs = int(self.config_manager.get('break_duration_s', 4))
+        except Exception:
+            _bd_secs = 0
+        init_bd_minutes = 0 if _bd_secs <= 0 else max(1, min(1000, _bd_secs // 60))
+        self.break_duration_minutes_spin.setValue(init_bd_minutes)
+        self.break_duration_minutes_spin.valueChanged.connect(self.on_break_duration_minutes_changed)
+        break_duration_layout.addWidget(self.break_duration_minutes_spin)
         break_duration_layout.addStretch()
         break_layout.addLayout(break_duration_layout)
-        
+
+        # Live countdown for next break / break remaining
+        break_live_layout = QHBoxLayout()
+        self.break_countdown_label = QLabel("Next break in: --:--")
+        self.break_countdown_label.setToolTip("Shows time until next break or when current break ends")
+        self.break_countdown_label.setStyleSheet("color: #a84; font-weight: bold;")
+        break_live_layout.addWidget(self.break_countdown_label)
+        break_live_layout.addStretch()
+        break_layout.addLayout(break_live_layout)
+
         settings_layout.addLayout(break_layout)
         
-        # Max runtime settings
+        # Max runtime settings (minutes, 0..1000 where 0 = unlimited)
         runtime_layout = QHBoxLayout()
-        
+
         runtime_layout.addWidget(QLabel("Max Runtime:"))
-        
-        # Use TimeSelector instead of QDoubleSpinBox
-        from ..components.time_selector import TimeSelector
-        self.max_runtime_selector = TimeSelector(label="", initial_seconds=self.config_manager.get('max_runtime_s', 0))
-        self.max_runtime_selector.setToolTip("Maximum time the bot will run (0 = unlimited)")
-        self.max_runtime_selector.timeChanged.connect(self.on_max_runtime_changed)
-        runtime_layout.addWidget(self.max_runtime_selector)
-        
-        # Add unlimited checkbox
+
+        self.max_runtime_minutes_spin = QSpinBox()
+        self.max_runtime_minutes_spin.setRange(0, 1000)
+        self.max_runtime_minutes_spin.setSuffix(" min")
+        self.max_runtime_minutes_spin.setToolTip("Maximum time the bot will run in minutes (0 = unlimited)")
+        try:
+            _secs = int(self.config_manager.get('max_runtime_s', 0))
+        except Exception:
+            _secs = 0
+        init_minutes = 0 if _secs <= 0 else max(1, min(1000, _secs // 60))
+        self.max_runtime_minutes_spin.setValue(init_minutes)
+        self.max_runtime_minutes_spin.valueChanged.connect(self.on_max_runtime_minutes_changed)
+        runtime_layout.addWidget(self.max_runtime_minutes_spin)
+
+        # Unlimited checkbox
         self.unlimited_runtime_checkbox = QCheckBox("Unlimited")
         self.unlimited_runtime_checkbox.setChecked(self.config_manager.get('max_runtime_s', 0) == 0)
         self.unlimited_runtime_checkbox.toggled.connect(self.on_unlimited_runtime_toggled)
         self.unlimited_runtime_checkbox.setToolTip("Run the bot without time limit")
         runtime_layout.addWidget(self.unlimited_runtime_checkbox)
-        
+
         runtime_layout.addStretch()
         settings_layout.addLayout(runtime_layout)
         
@@ -224,6 +276,11 @@ class ControlPanel(QWidget):
         
         # Populate window list
         self.refresh_window_list()
+
+        # Live refresh timer for break countdown
+        self._live_timer = QTimer(self)
+        self._live_timer.timeout.connect(self.refresh_break_countdown)
+        self._live_timer.start(1000)
     
     def refresh_window_list(self):
         """Refresh the window list"""
@@ -300,7 +357,7 @@ class ControlPanel(QWidget):
                 # Walk up to MainWindow and focus Instance Mode tab via QApplication
                 from PyQt5.QtWidgets import QApplication
                 mw = QApplication.activeWindow()
-                if hasattr(mw, 'focus_instance_mode_tab'):
+                if mw is not None and hasattr(mw, 'focus_instance_mode_tab'):
                     mw.focus_instance_mode_tab()
             except Exception:
                 pass
@@ -310,35 +367,92 @@ class ControlPanel(QWidget):
         logger.debug(f"Break every set to {value} seconds")
         self.config_manager.set('break_every_s', value)
     
-    def on_break_duration_changed(self, value):
-        """Handle break duration value change"""
-        logger.debug(f"Break duration set to {value} seconds")
-        self.config_manager.set('break_duration_s', value)
-    
-    def on_max_runtime_changed(self, value):
-        """Handle max runtime value change"""
-        if value == 0:
-            logger.debug("Max runtime set to unlimited")
-            self.unlimited_runtime_checkbox.setChecked(True)
+    def on_break_duration_minutes_changed(self, minutes):
+        """Handle break duration value change (in minutes)"""
+        try:
+            minutes = int(minutes)
+        except Exception:
+            minutes = 0
+        seconds = int(minutes * 60)
+        logger.debug(f"Break duration set to {minutes} minutes ({seconds} seconds)")
+        self.config_manager.set('break_duration_s', seconds)
+
+    def on_jitter_changed(self, value):
+        """Handle jitter percent change"""
+        try:
+            value = int(value)
+        except Exception:
+            value = 0
+        logger.debug(f"Humanization jitter set to {value}%")
+        self.config_manager.set('humanize_jitter_percent', float(value))
+        try:
+            self.jitter_label.setText(f"Jitter: ±{int(value)}%")
+        except Exception:
+            pass
+
+    def on_jitter_enabled_toggled(self, checked):
+        """Handle jitter enable checkbox toggle"""
+        self.config_manager.set('humanize_jitter_enabled', bool(checked))
+        try:
+            self.jitter_slider.setEnabled(bool(checked))
+        except Exception:
+            pass
+
+    def refresh_break_countdown(self):
+        """Update the 'Next break in' or 'Break ends in' label."""
+        try:
+            info = self.bot_controller.get_break_countdown()
+        except Exception:
+            info = None
+        if not info:
+            self.break_countdown_label.setText("Next break in: --:--")
+            return
+        sec = float(info.get('seconds', 0.0))
+        m, s = divmod(max(0, int(sec)), 60)
+        if m >= 60:
+            h, rem = divmod(m, 60)
+            txt = f"{int(h):02}:{int(rem):02}:{int(s):02}"
         else:
-            logger.debug(f"Max runtime set to {value} seconds")
+            txt = f"{int(m):02}:{int(s):02}"
+        if bool(info.get('on_break', False)):
+            self.break_countdown_label.setText(f"Break ends in: {txt}")
+        else:
+            self.break_countdown_label.setText(f"Next break in: {txt}")
+    
+    def on_max_runtime_minutes_changed(self, minutes):
+        """Handle max runtime (minutes) value change"""
+        try:
+            minutes = int(minutes)
+        except Exception:
+            minutes = 0
+        if minutes <= 0:
+            logger.debug("Max runtime set to unlimited (0 minutes)")
+            self.unlimited_runtime_checkbox.setChecked(True)
+            self.config_manager.set('max_runtime_s', 0)
+        else:
+            seconds = int(minutes * 60)
+            logger.debug(f"Max runtime set to {minutes} minutes ({seconds} seconds)")
             self.unlimited_runtime_checkbox.setChecked(False)
-        
-        self.config_manager.set('max_runtime_s', value)
+            self.config_manager.set('max_runtime_s', seconds)
         
     def on_unlimited_runtime_toggled(self, checked):
         """Handle unlimited runtime checkbox toggle"""
         if checked:
-            self.max_runtime_selector.set_time(0)
-            self.max_runtime_selector.setEnabled(False)
+            # Set to unlimited and disable minutes spin
+            self.max_runtime_minutes_spin.blockSignals(True)
+            self.max_runtime_minutes_spin.setValue(0)
+            self.max_runtime_minutes_spin.blockSignals(False)
+            self.max_runtime_minutes_spin.setEnabled(False)
             logger.debug("Max runtime set to unlimited")
             self.config_manager.set('max_runtime_s', 0)
         else:
-            self.max_runtime_selector.setEnabled(True)
-            # Only update if it's currently 0
-            if self.max_runtime_selector.get_time() == 0:
-                self.max_runtime_selector.set_time(3600)  # Default to 1 hour
-                self.config_manager.set('max_runtime_s', 3600)
+            # Enable minutes spin and set a sensible default if 0
+            self.max_runtime_minutes_spin.setEnabled(True)
+            if int(self.max_runtime_minutes_spin.value()) == 0:
+                self.max_runtime_minutes_spin.blockSignals(True)
+                self.max_runtime_minutes_spin.setValue(60)  # Default to 60 minutes
+                self.max_runtime_minutes_spin.blockSignals(False)
+                self.config_manager.set('max_runtime_s', 60 * 60)
     
     def on_debug_overlay_toggled(self, checked):
         """Handle debug overlay checkbox toggle"""

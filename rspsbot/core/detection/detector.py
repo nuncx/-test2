@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from ..config import ConfigManager, ColorSpec, ROI
 from .capture import CaptureService
 from .color_detector import build_mask, build_mask_multi, contours_to_screen_points
+from .color_detector import build_mask_precise_small
 from .color_detector import closest_contour_to_point, largest_contour, random_contour
 
 # Import InstanceOnlyDetector (will be imported when needed)
@@ -20,34 +21,242 @@ from .color_detector import closest_contour_to_point, largest_contour, random_co
 logger = logging.getLogger('rspsbot.core.detection.detector')
 
 class DetectionEngine:
-    def detect_text(self, text: str, bbox: Optional[Dict[str, int]] = None, lang: str = 'eng', config: str = '') -> bool:
+
+    def detect_combat_style_counts(self) -> Optional[Dict[str, Any]]:
         """
-        Detect if a line of text appears in a region of the screen using OCR.
-        Args:
-            text: Text to search for (case-insensitive)
-            bbox: Bounding box to capture (left, top, width, height). If None, uses window.
-            lang: Language for OCR (default 'eng')
-            config: Extra config for pytesseract
+        Compute per-style pixel counts within the Style Indicator ROI using the configured ColorSpecs and
+        thresholds. Returns a dict with counts and the selected style (or None if none exceed thresholds).
+
         Returns:
-            True if text is found, False otherwise
+            {
+              'counts': {'melee': int, 'ranged': int, 'magic': int},
+              'thresholds': {'melee': int, 'ranged': int, 'magic': int, 'global': int},
+              'style': Optional[str]
+            } | None if ROI/frame not available
         """
         try:
-            import pytesseract
-            from PIL import Image
-        except ImportError:
-            logger.error("pytesseract or Pillow not installed")
-            return False
+            roi = self.config_manager.get_roi('combat_style_roi')
+            if not roi:
+                return None
+            frame = self.capture_service.capture_region(roi)
+            if frame is None:
+                return None
 
-        # Capture image from screen
-        img_bgr = self.capture_service.capture(bbox)
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(img_rgb)
+            specs: Dict[str, Optional[ColorSpec]] = {
+                'melee': self.config_manager.get_color_spec('combat_style_melee_color'),
+                'ranged': self.config_manager.get_color_spec('combat_style_ranged_color'),
+                'magic': self.config_manager.get_color_spec('combat_style_magic_color'),
+            }
+            global_min = int(self.config_manager.get('combat_style_min_pixels', 40))
+            thr = {
+                'melee': int(self.config_manager.get('combat_style_min_pixels_melee', 0) or 0) or global_min,
+                'ranged': int(self.config_manager.get('combat_style_min_pixels_ranged', 0) or 0) or global_min,
+                'magic': int(self.config_manager.get('combat_style_min_pixels_magic', 0) or 0) or global_min,
+                'global': global_min,
+            }
+            use_precise_small = bool(self.config_manager.get('combat_precise_mode', True))
+            cm_cfg = {
+                'combat_lab_tolerance': self.config_manager.get('combat_lab_tolerance', 18),
+                'combat_sat_min': self.config_manager.get('combat_sat_min', 40),
+                'combat_val_min': self.config_manager.get('combat_val_min', 40),
+                'combat_morph_open_iters': self.config_manager.get('combat_morph_open_iters', 1),
+                'combat_morph_close_iters': self.config_manager.get('combat_morph_close_iters', 1),
+            }
 
-        # Run OCR
-        ocr_result = pytesseract.image_to_string(pil_img, lang=lang, config=config)
-        logger.debug(f"OCR result: {ocr_result}")
-        # Search for text (case-insensitive)
-        return text.lower() in ocr_result.lower()
+            counts: Dict[str, int] = {'melee': 0, 'ranged': 0, 'magic': 0}
+
+            for key, spec in specs.items():
+                if not spec:
+                    counts[key] = 0
+                    continue
+                from typing import cast as _cast
+                if use_precise_small:
+                    mask, _ = build_mask_precise_small(frame, _cast(ColorSpec, spec), cm_cfg, step=1, min_area=0)
+                else:
+                    mask, _ = build_mask(frame, _cast(ColorSpec, spec), step=1, precise=True, min_area=0)
+                counts[key] = int(cv2.countNonZero(mask))
+
+            # Determine selected style among those that exceed threshold
+            eligible = [k for k in counts.keys() if counts[k] >= thr[k]]
+            if not eligible:
+                sel = None
+            elif len(eligible) == 1:
+                sel = eligible[0]
+            else:
+                sel = max(eligible, key=lambda k: counts[k])
+
+            return {'counts': counts, 'thresholds': thr, 'style': sel}
+        except Exception:
+            return None
+
+    def detect_combat_style(self) -> Optional[str]:
+        """
+        Detect the current combat style by color presence within a configured ROI.
+
+        Config keys:
+          - combat_style_roi: ROI where a style indicator appears
+          - combat_style_melee_color / _ranged_color / _magic_color: ColorSpec for each style
+          - combat_style_min_pixels: minimum pixels to count as present
+
+        Returns: 'melee' | 'ranged' | 'magic' | None
+        """
+        try:
+            roi = self.config_manager.get_roi('combat_style_roi')
+            if not roi:
+                return None
+            frame = self.capture_service.capture_region(roi)
+            if frame is None:
+                return None
+
+            global_min_pix = int(self.config_manager.get('combat_style_min_pixels', 40))
+            specs: Dict[str, Optional[ColorSpec]] = {
+                'melee': self.config_manager.get_color_spec('combat_style_melee_color'),
+                'ranged': self.config_manager.get_color_spec('combat_style_ranged_color'),
+                'magic': self.config_manager.get_color_spec('combat_style_magic_color'),
+            }
+            present = []
+            use_precise_small = bool(self.config_manager.get('combat_precise_mode', True))
+            cm_cfg = {
+                'combat_lab_tolerance': self.config_manager.get('combat_lab_tolerance', 18),
+                'combat_sat_min': self.config_manager.get('combat_sat_min', 40),
+                'combat_val_min': self.config_manager.get('combat_val_min', 40),
+                'combat_morph_open_iters': self.config_manager.get('combat_morph_open_iters', 1),
+                'combat_morph_close_iters': self.config_manager.get('combat_morph_close_iters', 1),
+            }
+            for key, spec in specs.items():
+                if not spec:
+                    continue
+                try:
+                    # Per-style threshold with fallback to global
+                    if key == 'melee':
+                        style_min = int(self.config_manager.get('combat_style_min_pixels_melee', 0) or 0)
+                    elif key == 'ranged':
+                        style_min = int(self.config_manager.get('combat_style_min_pixels_ranged', 0) or 0)
+                    else:
+                        style_min = int(self.config_manager.get('combat_style_min_pixels_magic', 0) or 0)
+                    min_pix = style_min if style_min > 0 else global_min_pix
+                    # Spec is ensured non-None above; cast for type checkers
+                    from typing import cast as _cast
+                    if use_precise_small:
+                        mask, _ = build_mask_precise_small(frame, _cast(ColorSpec, spec), cm_cfg, step=1, min_area=0)
+                    else:
+                        mask, _ = build_mask(frame, _cast(ColorSpec, spec), step=1, precise=True, min_area=0)
+                    if cv2.countNonZero(mask) >= min_pix:
+                        present.append(key)
+                except Exception:
+                    continue
+            if not present:
+                return None
+            # If multiple present, choose the one with largest pixel count
+            if len(present) == 1:
+                return present[0]
+            best_key = None
+            best_count = -1
+            for key in present:
+                try:
+                    spec = specs[key]
+                    from typing import cast as _cast
+                    if use_precise_small:
+                        mask, _ = build_mask_precise_small(frame, _cast(ColorSpec, spec), cm_cfg, step=1, min_area=0)
+                    else:
+                        mask, _ = build_mask(frame, _cast(ColorSpec, spec), step=1, precise=True, min_area=0)
+                    cnt = int(cv2.countNonZero(mask))
+                    if cnt > best_count:
+                        best_key = key
+                        best_count = cnt
+                except Exception:
+                    pass
+            return best_key
+        except Exception:
+            return None
+
+    def detect_weapon_for_style(self, style: Optional[str]) -> Optional[Tuple[int, int]]:
+        """
+        Locate a clickable weapon/style icon in the Weapon ROI using the given style's color.
+        If found, return a screen (x, y) point; else None.
+
+        style: 'melee'|'ranged'|'magic'|None. If None, uses preferred style from config.
+        """
+        try:
+            roi = self.config_manager.get_roi('combat_weapon_roi')
+            if not roi:
+                return None
+            frame = self.capture_service.capture_region(roi)
+            if frame is None:
+                return None
+
+            st = (style or str(self.config_manager.get('combat_style_preferred', 'melee'))).lower()
+            # Prefer weapon-specific color spec, fallback to style color
+            if st.startswith('melee'):
+                spec = self.config_manager.get_color_spec('combat_weapon_melee_color') or self.config_manager.get_color_spec('combat_style_melee_color')
+            elif st.startswith('rang'):
+                spec = self.config_manager.get_color_spec('combat_weapon_ranged_color') or self.config_manager.get_color_spec('combat_style_ranged_color')
+            else:
+                spec = self.config_manager.get_color_spec('combat_weapon_magic_color') or self.config_manager.get_color_spec('combat_style_magic_color')
+            if not spec:
+                return None
+
+            from typing import cast as _cast
+            use_precise_small = bool(self.config_manager.get('combat_precise_mode', True))
+            cm_cfg = {
+                'combat_lab_tolerance': self.config_manager.get('combat_lab_tolerance', 18),
+                'combat_sat_min': self.config_manager.get('combat_sat_min', 40),
+                'combat_val_min': self.config_manager.get('combat_val_min', 40),
+                'combat_morph_open_iters': self.config_manager.get('combat_morph_open_iters', 1),
+                'combat_morph_close_iters': self.config_manager.get('combat_morph_close_iters', 1),
+            }
+            if use_precise_small:
+                mask, contours = build_mask_precise_small(frame, _cast(ColorSpec, spec), cm_cfg, step=1, min_area=0)
+            else:
+                mask, contours = build_mask(frame, _cast(ColorSpec, spec), step=1, precise=True, min_area=0)
+            # Per-style threshold with fallback to global
+            global_min = int(self.config_manager.get('combat_weapon_min_pixels', 30))
+            if st.startswith('melee'):
+                style_min = int(self.config_manager.get('combat_weapon_min_pixels_melee', 0) or 0)
+            elif st.startswith('rang'):
+                style_min = int(self.config_manager.get('combat_weapon_min_pixels_ranged', 0) or 0)
+            else:
+                style_min = int(self.config_manager.get('combat_weapon_min_pixels_magic', 0) or 0)
+            min_pix = style_min if style_min > 0 else global_min
+            if int(cv2.countNonZero(mask)) < min_pix:
+                return None
+
+            # Choose largest contour as target; convert to screen point
+            cnt = largest_contour(contours)
+            if cnt is None or len(cnt) == 0:
+                ys, xs = np.where(mask > 0)
+                if xs.size == 0:
+                    return None
+                cx = int(xs.mean())
+                cy = int(ys.mean())
+            else:
+                M = cv2.moments(cnt)
+                if M.get('m00', 0) == 0:
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    cx = x + w // 2
+                    cy = y + h // 2
+                else:
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+
+            # Translate ROI-local point to screen coordinates
+            try:
+                left = int(roi.left)  # type: ignore[attr-defined]
+                top = int(roi.top)    # type: ignore[attr-defined]
+            except Exception:
+                try:
+                    rdict = roi.to_dict() if hasattr(roi, 'to_dict') else (dict(roi) if isinstance(roi, dict) else {})
+                    left = int(rdict.get('left', 0))
+                    top = int(rdict.get('top', 0))
+                except Exception:
+                    left, top = 0, 0
+            return (int(left + cx), int(top + cy))
+        except Exception:
+            return None
+
+    def detect_weapon_for_preferred_style(self) -> Optional[Tuple[int, int]]:
+        """Backward-compatible wrapper using the configured preferred style."""
+        return self.detect_weapon_for_style(None)
     """
     Central detection engine that coordinates detection of tiles, monsters, and combat status
     
@@ -88,6 +297,12 @@ class DetectionEngine:
             'detection_time_ms': 0,
             'detection_count': 0
         }
+
+        # Temporal persistence (smooth out flicker)
+        self._persist_tiles: List[Tuple[int, int]] = []
+        self._persist_tiles_ts: float = 0.0
+        self._persist_monsters: List[Dict[str, Any]] = []
+        self._persist_monsters_ts: float = 0.0
         
         logger.info("Detection engine initialized")
     
@@ -120,7 +335,10 @@ class DetectionEngine:
         current_time = time.time()
         cache_ttl = self.config_manager.get('detection_cache_ttl', 0.1)
         
-        if current_time - self._last_detection_time < cache_ttl:
+        if (
+            self._last_detection_result is not None
+            and (current_time - self._last_detection_time) < cache_ttl
+        ):
             return self._last_detection_result.copy()
         
         # Start timing
@@ -144,6 +362,18 @@ class DetectionEngine:
                 'detection_time_ms': detection_time_ms,
                 'roi': roi
             }
+            # Attach combat style debug info even in early-return path
+            try:
+                style_dbg = self.detect_combat_style_counts()
+            except Exception:
+                style_dbg = None
+            if style_dbg:
+                try:
+                    result['combat_style'] = style_dbg.get('style')
+                    result['combat_style_counts'] = style_dbg.get('counts', {})
+                    result['combat_style_thresholds'] = style_dbg.get('thresholds', {})
+                except Exception:
+                    pass
             self._last_detection_result = result.copy()
             self._last_detection_time = current_time
             return result
@@ -158,6 +388,20 @@ class DetectionEngine:
         # If no tiles found, try adaptive search
         if not tiles and self.config_manager.get('adaptive_search', True):
             tiles = self.tile_detector.detect_tiles_adaptive(frame, roi)
+
+        # Apply tile persistence (if enabled) when no tiles were found
+        tile_persist_ms = int(self.config_manager.get('tile_persistence_ms', 0))
+        now = current_time
+        if not tiles and tile_persist_ms > 0:
+            age_ms = (now - self._persist_tiles_ts) * 1000.0
+            if self._persist_tiles and age_ms <= tile_persist_ms:
+                logger.debug(f"Using persisted tiles ({len(self._persist_tiles)}) age={age_ms:.0f}ms")
+                tiles = list(self._persist_tiles)
+        else:
+            # Update persistence store when we have fresh detections
+            if tiles:
+                self._persist_tiles = list(tiles)
+                self._persist_tiles_ts = now
         
     # Detect monsters near each tile (still within SEARCH ROI via local ROI windows)
         monsters = []
@@ -168,6 +412,29 @@ class DetectionEngine:
             monsters_by_tile.append((tile, len(tile_monsters)))
         
         self._stats['monster_detections'] += 1
+
+        # If still nothing, optionally fall back to scanning the entire search ROI
+        if not monsters and self.config_manager.get('enable_monster_full_fallback', False):
+            logger.debug("Monster full fallback enabled and no monsters found near tiles -> scanning full ROI")
+            global_monsters = self.monster_detector.detect_monsters_in_bbox(frame, roi)
+            monsters.extend(global_monsters)
+            if global_monsters:
+                roi_cx = roi['left'] + roi['width'] // 2
+                roi_cy = roi['top'] + roi['height'] // 2
+                monsters_by_tile.append(((roi_cx, roi_cy), len(global_monsters)))
+
+        # Apply monster persistence (if enabled) when no monsters were found
+        mon_persist_ms = int(self.config_manager.get('monster_persistence_ms', 0))
+        if not monsters and mon_persist_ms > 0:
+            age_ms = (now - self._persist_monsters_ts) * 1000.0
+            if self._persist_monsters and age_ms <= mon_persist_ms:
+                logger.debug(f"Using persisted monsters ({len(self._persist_monsters)}) age={age_ms:.0f}ms")
+                monsters = list(self._persist_monsters)
+        else:
+            # Update persistence store when we have fresh detections
+            if monsters:
+                self._persist_monsters = list(monsters)
+                self._persist_monsters_ts = now
         
         # Check combat status
         # Determine combat state; CombatDetector captures HP ROI internally
@@ -177,7 +444,8 @@ class DetectionEngine:
         
         # Calculate detection time
         detection_time_ms = (time.time() - start_time) * 1000
-        self._stats['detection_time_ms'] += detection_time_ms
+        # Accumulate as float separately to avoid type noise; store rounded in stats
+        self._stats['detection_time_ms'] = int(self._stats['detection_time_ms'] + detection_time_ms)
         self._stats['detection_count'] += 1
         
         # Create result
@@ -191,6 +459,20 @@ class DetectionEngine:
             'detection_time_ms': detection_time_ms,
             'roi': roi
         }
+
+        # Also compute combat style debug info (lightweight; skips gracefully if ROI/specs missing)
+        try:
+            style_dbg = self.detect_combat_style_counts()
+        except Exception:
+            style_dbg = None
+        if style_dbg:
+            try:
+                result['combat_style'] = style_dbg.get('style')
+                result['combat_style_counts'] = style_dbg.get('counts', {})
+                result['combat_style_thresholds'] = style_dbg.get('thresholds', {})
+            except Exception:
+                # Best-effort only; ignore on error
+                pass
         
         # Cache result
         self._last_detection_result = result.copy()
@@ -206,14 +488,15 @@ class DetectionEngine:
     def get_stats(self) -> Dict[str, Any]:
         """Get detection statistics"""
         stats = self._stats.copy()
-        
-        # Calculate averages
+        # Calculate averages (do not mutate int keys with floats)
         if stats['detection_count'] > 0:
-            stats['avg_detection_time_ms'] = stats['detection_time_ms'] / stats['detection_count']
+            avg_ms = stats['detection_time_ms'] / max(1, stats['detection_count'])
         else:
-            stats['avg_detection_time_ms'] = 0
-        
-        return stats
+            avg_ms = 0
+        stats_out = stats.copy()
+        # Keep stats dict typed as ints; expose rounded average
+        stats_out['avg_detection_time_ms'] = int(avg_ms)
+        return stats_out
     
     def reset_stats(self):
         """Reset detection statistics"""
@@ -584,6 +867,105 @@ class MonsterDetector:
         
         except Exception as e:
             logger.error(f"Error detecting monsters: {e}")
+            return []
+
+    def detect_monsters_in_bbox(
+        self,
+        frame: np.ndarray,
+        base_roi: Dict[str, int]
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect monsters across the entire provided ROI (global fallback)
+
+        Args:
+            frame: Frame corresponding to base_roi (already cropped by caller)
+            base_roi: Absolute bounding box of the frame
+
+        Returns:
+            List of monster dictionaries with position and metadata
+        """
+        # Get monster colors
+        monster_colors = []
+        monster_colors_dicts = self.config_manager.get('monster_colors', [])
+
+        for color_dict in monster_colors_dicts:
+            try:
+                color = ColorSpec(
+                    rgb=tuple(color_dict['rgb']),
+                    tol_rgb=color_dict.get('tol_rgb', 8),
+                    use_hsv=color_dict.get('use_hsv', True),
+                    tol_h=color_dict.get('tol_h', 4),
+                    tol_s=color_dict.get('tol_s', 30),
+                    tol_v=color_dict.get('tol_v', 30)
+                )
+                monster_colors.append(color)
+            except Exception as e:
+                logger.error(f"Error creating monster ColorSpec: {e}")
+
+        if not monster_colors:
+            logger.warning("No valid monster colors configured")
+            return []
+
+        # Detection parameters
+        step = max(1, self.config_manager.get('monster_scan_step', 1))
+        use_precise = self.config_manager.get('use_precise_mode', True)
+        monster_min_area = self.config_manager.get('monster_min_area', 15)
+
+        config_dict = {
+            'monster_sat_min': self.config_manager.get('monster_sat_min', 50),
+            'monster_val_min': self.config_manager.get('monster_val_min', 50),
+            'monster_exclude_tile_color': self.config_manager.get('monster_exclude_tile_color', True),
+            'monster_exclude_tile_dilate': self.config_manager.get('monster_exclude_tile_dilate', 1),
+            'monster_morph_open_iters': self.config_manager.get('monster_morph_open_iters', 1),
+            'monster_morph_close_iters': self.config_manager.get('monster_morph_close_iters', 2),
+            'monster_use_lab_assist': self.config_manager.get('monster_use_lab_assist', False),
+            'monster_lab_tolerance': self.config_manager.get('monster_lab_tolerance', 20),
+            'tile_color': self.config_manager.get('tile_color')
+        }
+
+        try:
+            # Build mask and find contours over full ROI frame
+            _, contours = build_mask_multi(
+                frame,
+                monster_colors,
+                step,
+                use_precise,
+                monster_min_area,
+                config_dict
+            )
+
+            monsters: List[Dict[str, Any]] = []
+            for cnt in contours:
+                M = cv2.moments(cnt)
+                if M["m00"] == 0:
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    cx_small, cy_small = x + w // 2, y + h // 2
+                else:
+                    cx_small = int(M["m10"] / M["m00"])
+                    cy_small = int(M["m01"] / M["m00"])
+
+                screen_x = base_roi['left'] + cx_small * step
+                screen_y = base_roi['top'] + cy_small * step
+                area = cv2.contourArea(cnt)
+                x, y, w, h = cv2.boundingRect(cnt)
+
+                monster = {
+                    'position': (screen_x, screen_y),
+                    'area': area * step * step,
+                    'width': w * step,
+                    'height': h * step,
+                    'tile_center': None,
+                    'distance': 0.0
+                }
+                monsters.append(monster)
+
+            if monsters:
+                logger.debug(f"Global ROI detection found {len(monsters)} monsters")
+
+            return monsters
+
+        except Exception as e:
+            logger.error(f"Error in global monster detection: {e}")
             return []
     
     def _create_detection_roi(

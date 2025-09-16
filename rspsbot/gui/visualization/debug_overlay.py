@@ -7,6 +7,7 @@ Usage:
 - Respects config keys: debug_overlay (visibility) and overlay_mode (tile|monster|both)
 """
 import logging
+import time
 from typing import Dict, Any, List, Tuple, Optional
 
 from PyQt5.QtCore import Qt, QRect, QPoint, QTimer, pyqtSignal, QObject
@@ -40,25 +41,39 @@ class DebugOverlayWindow(QWidget):
         self._monsters: List[Dict[str, Any]] = []
         self._in_combat: bool = False
         self._hp_seen: bool = False
+        # Combat style debug
+        self._style: Optional[str] = None
+        self._style_counts: Dict[str, int] = {}
+        self._style_thr: Dict[str, int] = {}
+        # Debug throttle for ROI logging
+        self._last_roi_log_ts = 0.0
 
         # Proxy for cross-thread event delivery
         self._proxy = _OverlayProxy(self)
         self._proxy.detectionUpdated.connect(self._apply_detection_update)
 
-        # Window configuration
-        self.setWindowFlags(
-            Qt.FramelessWindowHint
-            | Qt.Tool
-            | Qt.WindowStaysOnTopHint
-            | Qt.X11BypassWindowManagerHint
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        # Window configuration (set flags individually for compatibility)
+        for name in ('FramelessWindowHint', 'Tool', 'WindowStaysOnTopHint', 'X11BypassWindowManagerHint'):
+            flag = getattr(Qt, name, None)
+            if flag is not None:
+                try:
+                    self.setWindowFlag(flag, True)
+                except Exception:
+                    pass
+        for attr_name in ('WA_TranslucentBackground', 'WA_TransparentForMouseEvents'):
+            attr = getattr(Qt, attr_name, None)
+            if attr is not None:
+                try:
+                    self.setAttribute(attr, True)
+                except Exception:
+                    pass
 
         # Cover the full desktop. Note: primary screen only on some setups; good enough as minimal overlay.
         try:
-            geom = QApplication.desktop().geometry()
-            self.setGeometry(geom)
+            desk = QApplication.desktop()
+            if desk is not None:
+                geom = desk.geometry()
+                self.setGeometry(geom)
         except Exception:
             pass
 
@@ -94,6 +109,10 @@ class DebugOverlayWindow(QWidget):
             self._monsters = result.get('monsters', [])
             self._in_combat = bool(result.get('in_combat', False))
             self._hp_seen = bool(result.get('hp_seen', False))
+            # Style debug
+            self._style = result.get('combat_style')
+            self._style_counts = result.get('combat_style_counts', {}) or {}
+            self._style_thr = result.get('combat_style_thresholds', {}) or {}
             self.update()
         except Exception as e:
             logger.error(f"Overlay update error: {e}")
@@ -118,19 +137,43 @@ class DebugOverlayWindow(QWidget):
             if roi_to_draw is None:
                 # As a last resort, show hpbar_roi so there is at least something visible
                 roi_to_draw = self.config_manager.get('hpbar_roi') or None
-            if roi_to_draw is None:
-                return
+        # It's okay if roi_to_draw is None here; we'll continue to draw other requested overlays
 
         # Decide what to draw
         mode = self.config_manager.get('overlay_mode', 'tile')
 
-        # Draw ROI
-        self._draw_roi(painter, roi_to_draw, offset=(off_x, off_y))
+        # Draw ROI if available (primary search/detection ROI)
+        if roi_to_draw is not None:
+            self._draw_roi(painter, roi_to_draw, offset=(off_x, off_y))
 
         # Also draw HP ROI outline in a distinct color if present
         hp_roi = self.config_manager.get('hpbar_roi')
         if hp_roi:
             self._draw_roi(painter, hp_roi, color=QColor(255, 220, 0, 220), offset=(off_x, off_y))
+
+        # Draw Combat ROIs if requested via config flags
+        try:
+            if bool(self.config_manager.get('overlay_show_combat_style_roi', False)):
+                s_roi = self.config_manager.get_roi('combat_style_roi')
+                if s_roi:
+                    self._draw_labeled_roi(
+                        painter, s_roi, label="Style ROI",
+                        color=QColor(255, 0, 255, 220),  # magenta
+                        offset=(off_x, off_y)
+                    )
+                    # Debug log normalized coords and window bbox
+                    self._maybe_log_roi_debug("Style ROI", s_roi)
+            if bool(self.config_manager.get('overlay_show_combat_weapon_roi', False)):
+                w_roi = self.config_manager.get_roi('combat_weapon_roi')
+                if w_roi:
+                    self._draw_labeled_roi(
+                        painter, w_roi, label="Weapon ROI",
+                        color=QColor(0, 200, 255, 220),  # cyan
+                        offset=(off_x, off_y)
+                    )
+                    self._maybe_log_roi_debug("Weapon ROI", w_roi)
+        except Exception:
+            pass
 
         # Draw tiles and/or monsters
         if mode in ('tile', 'both'):
@@ -142,7 +185,7 @@ class DebugOverlayWindow(QWidget):
         self._draw_status(painter, self._in_combat, self._hp_seen)
 
         # Draw counts as text labels near the ROI (if enabled)
-        if bool(self.config_manager.get('show_overlay_counts', True)):
+        if roi_to_draw is not None and bool(self.config_manager.get('show_overlay_counts', True)):
             try:
                 tiles_count = len(self._tiles)
                 monsters_count = len(self._monsters)
@@ -150,13 +193,21 @@ class DebugOverlayWindow(QWidget):
             except Exception:
                 pass
 
+        # Draw combat style HUD (if data present)
+        try:
+            self._draw_style_hud(painter, offset=(off_x, off_y))
+        except Exception:
+            pass
+
         painter.end()
 
     def _draw_roi(self, painter: QPainter, roi: Dict[str, int], color: Optional[QColor] = None, offset: Tuple[int, int] = (0, 0)):
+        # Normalize ROI to absolute screen-space if it looks window-relative
+        roi = self._normalize_roi_to_absolute(roi)
         pen = QPen(color or QColor(0, 200, 255, 200))  # cyan-ish by default
         pen.setWidth(2)
         painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(QColor(0, 0, 0, 0))
         ox, oy = offset
         rect = QRect(roi['left'] - ox, roi['top'] - oy, roi['width'], roi['height'])
         painter.drawRect(rect)
@@ -194,7 +245,7 @@ class DebugOverlayWindow(QWidget):
         pen = QPen(color)
         pen.setWidth(3)
         painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(QColor(0, 0, 0, 0))
         painter.drawEllipse(QPoint(20, 20), 8, 8)
 
     def _draw_counts_label(self, painter: QPainter, roi: Dict[str, int], tiles_count: int, monsters_count: int, offset: Tuple[int, int] = (0, 0)):
@@ -221,6 +272,162 @@ class DebugOverlayWindow(QWidget):
         # Text
         painter.setPen(QColor(255, 255, 255, 230))
         painter.drawText(x, y, text)
+
+    def _draw_labeled_roi(self, painter: QPainter, roi: Dict[str, int], label: str, color: QColor, offset: Tuple[int, int] = (0, 0)):
+        # Normalize first to absolute screen coords
+        roi = self._normalize_roi_to_absolute(roi)
+        # Draw filled, outlined ROI with center crosshair and a small label
+        ox, oy = offset
+        rect = QRect(roi['left'] - ox, roi['top'] - oy, roi['width'], roi['height'])
+        # Fill
+        fill = QColor(color)
+        fill.setAlpha(60)
+        painter.fillRect(rect, fill)
+        # Border
+        pen = QPen(QColor(color))
+        pen.setWidth(3)
+        painter.setPen(pen)
+        painter.setBrush(QColor(0, 0, 0, 0))
+        painter.drawRect(rect)
+        # Crosshair
+        cx = rect.left() + max(0, rect.width() // 2)
+        cy = rect.top() + max(0, rect.height() // 2)
+        xhair = QPen(QColor(255, 255, 0, 230))
+        xhair.setWidth(2)
+        painter.setPen(xhair)
+        painter.drawLine(cx - 6, cy, cx + 6, cy)
+        painter.drawLine(cx, cy - 6, cx, cy + 6)
+        # Label box
+        try:
+            font = QFont()
+            font.setPointSize(9)
+            painter.setFont(font)
+            metrics = QFontMetrics(font)
+            w = metrics.horizontalAdvance(label) + 8
+            h = metrics.height() + 4
+            lx = rect.left()
+            ly = rect.top() - h - 2
+            # If above would be off-screen relative to overlay window, place inside
+            if ly < 0:
+                ly = rect.top() + 2
+            painter.setPen(QPen(QColor(255, 255, 255, 220)))
+            painter.setBrush(QColor(0, 0, 0, 150))
+            painter.drawRect(lx, ly, w, h)
+            painter.setPen(QColor(255, 255, 255, 230))
+            painter.drawText(lx + 4, ly + h - 4, label)
+        except Exception:
+            pass
+
+    def _normalize_roi_to_absolute(self, roi: Dict[str, int]) -> Dict[str, int]:
+        """Ensure ROI is in absolute screen coordinates. If it appears window-relative, translate by window bbox."""
+        try:
+            # Accept ROI as dict-like; if dataclass provided, convert
+            if hasattr(roi, 'to_dict'):
+                roi = roi.to_dict()  # type: ignore[assignment]
+            l = int(roi.get('left', 0)); t = int(roi.get('top', 0))
+            w = int(roi.get('width', 0)); h = int(roi.get('height', 0))
+            mode = str(roi.get('mode', 'absolute')).lower()
+            # Use CaptureService to get focused window bbox
+            from ...core.detection.capture import CaptureService
+            cs = CaptureService()
+            title = self.config_manager.get('window_title', '')
+            if title:
+                try:
+                    cs.focus_window(title, retries=1, sleep_s=0.05, exact=False)
+                except Exception:
+                    pass
+            bbox = cs.get_window_bbox()
+            # If explicitly relative, always translate
+            if mode == 'relative':
+                return {
+                    'left': bbox['left'] + l,
+                    'top': bbox['top'] + t,
+                    'width': w,
+                    'height': h,
+                }
+            # Otherwise, heuristic fallback
+            within_abs_window = (
+                l >= bbox['left'] - 2 and l <= bbox['left'] + bbox['width'] + 2 and
+                t >= bbox['top'] - 2 and t <= bbox['top'] + bbox['height'] + 2
+            )
+            looks_relative = (l < bbox['width'] and t < bbox['height'] and w <= bbox['width'] and h <= bbox['height'])
+            if not within_abs_window and looks_relative:
+                return {
+                    'left': bbox['left'] + l,
+                    'top': bbox['top'] + t,
+                    'width': w,
+                    'height': h,
+                }
+        except Exception:
+            pass
+        return roi
+
+    def _maybe_log_roi_debug(self, label: str, roi_like):
+        """Log normalized ROI and window bbox at most once every ~2s."""
+        try:
+            now = time.time()
+            if now - self._last_roi_log_ts < 2.0:
+                return
+            self._last_roi_log_ts = now
+            # Normalize ROI
+            roi = roi_like.to_dict() if hasattr(roi_like, 'to_dict') else dict(roi_like)
+            roi_abs = self._normalize_roi_to_absolute(roi)
+            # Get window bbox
+            from ...core.detection.capture import CaptureService
+            cs = CaptureService()
+            title = self.config_manager.get('window_title', '')
+            if title:
+                try:
+                    cs.focus_window(title, retries=1, sleep_s=0.05, exact=False)
+                except Exception:
+                    pass
+            bbox = cs.get_window_bbox()
+            logger.debug(f"{label}: roi={roi} -> normalized={roi_abs} | window_bbox={bbox}")
+        except Exception:
+            pass
+
+    def _draw_style_hud(self, painter: QPainter, offset: Tuple[int, int] = (0, 0)):
+        """Draw current combat style and per-style counts/thresholds near the Style ROI if available, else top-left."""
+        if self._style is None and not self._style_counts:
+            return
+        # Compose lines
+        style_label = self._style if self._style else 'false'
+        melee_txt = f"M:{int(self._style_counts.get('melee', 0))}/{self._style_thr.get('melee', '-')}"
+        ranged_txt = f"R:{int(self._style_counts.get('ranged', 0))}/{self._style_thr.get('ranged', '-')}"
+        magic_txt = f"Mg:{int(self._style_counts.get('magic', 0))}/{self._style_thr.get('magic', '-')}"
+        title = f"Style: {style_label}"
+        details = f"{melee_txt}  {ranged_txt}  {magic_txt}"
+
+        # Determine anchor rect: prefer combat_style_roi
+        ox, oy = offset
+        anchor = self.config_manager.get_roi('combat_style_roi') or None
+        if anchor:
+            try:
+                anchor_abs = self._normalize_roi_to_absolute(anchor)
+            except Exception:
+                anchor_abs = anchor
+            ax = int(anchor_abs['left']) - ox + 8
+            ay = int(anchor_abs['top']) - oy + 8
+        else:
+            ax, ay = 16, 40
+
+        # Measure
+        font = QFont()
+        font.setPointSize(10)
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        w = max(metrics.horizontalAdvance(title), metrics.horizontalAdvance(details)) + 12
+        h = metrics.height() * 2 + 10
+
+        # Box
+        painter.setPen(QPen(QColor(255, 255, 255, 200)))
+        painter.setBrush(QColor(0, 0, 0, 140))
+        painter.drawRect(ax - 6, ay - 6, w, h)
+
+        # Text
+        painter.setPen(QColor(255, 255, 255, 230))
+        painter.drawText(ax, ay + metrics.ascent(), title)
+        painter.drawText(ax, ay + metrics.height() + metrics.ascent(), details)
 
     # ---- Visibility / lifecycle ----
     def _sync_overlay_state(self):

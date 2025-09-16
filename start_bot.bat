@@ -3,17 +3,21 @@ setlocal
 
 echo Starting RSPS Color Bot...
 
-REM Activate local venv if present
-if exist "%~dp0venv\Scripts\activate.bat" (
-	call "%~dp0venv\Scripts\activate.bat"
+REM Determine project root (folder of this script)
+set "ROOT=%~dp0"
+
+REM Prefer .venv if present, then venv, otherwise fall back to system Python
+set "PYEXE="
+if exist "%ROOT%.venv\Scripts\python.exe" (
+    set "PYEXE=%ROOT%.venv\Scripts\python.exe"
+) else if exist "%ROOT%venv\Scripts\python.exe" (
+    set "PYEXE=%ROOT%venv\Scripts\python.exe"
+) else (
+    set "PYEXE=python"
 )
 
-REM Run with venv's python if available, fall back to system python
-if exist "%~dp0venv\Scripts\python.exe" (
-	"%~dp0venv\Scripts\python.exe" "%~dp0run.py"
-) else (
-	python "%~dp0run.py"
-)
+REM Run the app (pass through any additional args)
+"%PYEXE%" "%ROOT%run.py" %*
 
 echo.
 echo Press any key to exit . . .

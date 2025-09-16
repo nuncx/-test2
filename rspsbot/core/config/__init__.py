@@ -10,6 +10,18 @@ from dataclasses import dataclass, field, asdict
 # Get module logger
 logger = logging.getLogger('rspsbot.core.config')
 
+# Track warnings so we only log certain messages once per process to avoid spam
+_warn_once_flags = {
+    'tol_rgb_recommended': False,
+    'tol_h_recommended': False,
+    'tol_s_recommended': False,
+    'tol_v_recommended': False,
+    'tol_rgb_clamped': False,
+    'tol_h_clamped': False,
+    'tol_s_clamped': False,
+    'tol_v_clamped': False,
+}
+
 @dataclass
 class ColorSpec:
     """
@@ -46,15 +58,54 @@ class ColorSpec:
         if not all(0 <= c <= 255 for c in self.rgb):
             raise ValueError(f"RGB values must be between 0 and 255, got {self.rgb}")
         
-        # Validate tolerance values with warnings for extreme values
-        if not 0 <= self.tol_rgb <= 50:
-            logger.warning(f"tol_rgb value {self.tol_rgb} is outside recommended range 0-50")
-        if not 0 <= self.tol_h <= 20:
-            logger.warning(f"tol_h value {self.tol_h} is outside recommended range 0-20")
-        if not 0 <= self.tol_s <= 100:
-            logger.warning(f"tol_s value {self.tol_s} is outside recommended range 0-100")
-        if not 0 <= self.tol_v <= 100:
-            logger.warning(f"tol_v value {self.tol_v} is outside recommended range 0-100")
+        # Clamp tolerance values to safe absolute ranges to avoid invalid configs
+        # Absolute caps: RGB tol 0-100, H tol 0-60, S/V 0-100
+        if self.tol_rgb < 0 or self.tol_rgb > 100:
+            original = self.tol_rgb
+            self.tol_rgb = max(0, min(100, self.tol_rgb))
+            if not _warn_once_flags['tol_rgb_clamped']:
+                logger.warning(
+                    f"tol_rgb value {original} clamped to {self.tol_rgb} (allowed 0-100)"
+                )
+                _warn_once_flags['tol_rgb_clamped'] = True
+        if self.tol_h < 0 or self.tol_h > 60:
+            original = self.tol_h
+            self.tol_h = max(0, min(60, self.tol_h))
+            if not _warn_once_flags['tol_h_clamped']:
+                logger.warning(
+                    f"tol_h value {original} clamped to {self.tol_h} (allowed 0-60)"
+                )
+                _warn_once_flags['tol_h_clamped'] = True
+        if self.tol_s < 0 or self.tol_s > 100:
+            original = self.tol_s
+            self.tol_s = max(0, min(100, self.tol_s))
+            if not _warn_once_flags['tol_s_clamped']:
+                logger.warning(
+                    f"tol_s value {original} clamped to {self.tol_s} (allowed 0-100)"
+                )
+                _warn_once_flags['tol_s_clamped'] = True
+        if self.tol_v < 0 or self.tol_v > 100:
+            original = self.tol_v
+            self.tol_v = max(0, min(100, self.tol_v))
+            if not _warn_once_flags['tol_v_clamped']:
+                logger.warning(
+                    f"tol_v value {original} clamped to {self.tol_v} (allowed 0-100)"
+                )
+                _warn_once_flags['tol_v_clamped'] = True
+
+        # Recommend practical ranges (log once to prevent spam during tuning)
+        if not 0 <= self.tol_rgb <= 50 and not _warn_once_flags['tol_rgb_recommended']:
+            logger.warning("tol_rgb outside recommended range 0-50; higher values can increase false positives")
+            _warn_once_flags['tol_rgb_recommended'] = True
+        if not 0 <= self.tol_h <= 20 and not _warn_once_flags['tol_h_recommended']:
+            logger.warning("tol_h outside recommended range 0-20; consider keeping near target hue range")
+            _warn_once_flags['tol_h_recommended'] = True
+        if not 0 <= self.tol_s <= 100 and not _warn_once_flags['tol_s_recommended']:
+            logger.warning("tol_s outside recommended 0-100")
+            _warn_once_flags['tol_s_recommended'] = True
+        if not 0 <= self.tol_v <= 100 and not _warn_once_flags['tol_v_recommended']:
+            logger.warning("tol_v outside recommended 0-100")
+            _warn_once_flags['tol_v_recommended'] = True
 
 @dataclass
 class ROI:
@@ -71,6 +122,7 @@ class ROI:
     top: int
     width: int
     height: int
+    mode: str = 'absolute'  # 'absolute' or 'relative' to focused window
     
     def __post_init__(self):
         """Validate ROI parameters"""
@@ -79,23 +131,25 @@ class ROI:
         if self.height <= 0:
             raise ValueError(f"ROI height must be positive, got {self.height}")
     
-    def to_dict(self) -> Dict[str, int]:
+    def to_dict(self) -> Dict[str, Any]:
         """Convert ROI to dictionary format"""
         return {
             "left": self.left,
             "top": self.top,
             "width": self.width,
-            "height": self.height
+            "height": self.height,
+            "mode": self.mode
         }
     
     @classmethod
-    def from_dict(cls, data: Dict[str, int]) -> 'ROI':
+    def from_dict(cls, data: Dict[str, Any]) -> 'ROI':
         """Create ROI from dictionary"""
         return cls(
             left=data["left"],
             top=data["top"],
             width=data["width"],
-            height=data["height"]
+            height=data["height"],
+            mode=data.get("mode", 'absolute')
         )
 
 @dataclass
@@ -167,6 +221,8 @@ class ConfigManager:
         return {
             # Window settings
             "window_title": "Velador - Donikk",
+            # Modes
+            "instance_only_mode": False,
             
             # Detection settings
             "scan_interval": 0.2,
@@ -181,6 +237,9 @@ class ConfigManager:
             "enable_monster_full_fallback": False,
             "adaptive_search": True,
             "adaptive_monster_detection": True,
+            # Temporal persistence (ms)
+            "tile_persistence_ms": 300,
+            "monster_persistence_ms": 250,
             "monster_sat_min": 40,
             "monster_val_min": 40,
             "monster_exclude_tile_color": True,
@@ -189,6 +248,8 @@ class ConfigManager:
             "monster_morph_close_iters": 2,
             "monster_use_lab_assist": False,
             "monster_lab_tolerance": 22,
+            # Cache TTL
+            "detection_cache_ttl": 0.08,
             
             # Colors
             "tile_color": asdict(ColorSpec((255, 0, 0))),
@@ -248,6 +309,13 @@ class ConfigManager:
             "debug_output_dir": "outputs",
             
             # New v3 settings
+            # Combat precise small-ROI detection
+            "combat_precise_mode": True,
+            "combat_lab_tolerance": 18,   # ΔE76 threshold; lower is stricter
+            "combat_sat_min": 40,         # HSV S minimum to suppress gray
+            "combat_val_min": 40,         # HSV V minimum to suppress dark
+            "combat_morph_open_iters": 1, # Morph open iterations for denoise
+            "combat_morph_close_iters": 1,# Morph close iterations to connect
             
             # Teleport settings
             "teleport_locations": [],
@@ -267,11 +335,23 @@ class ConfigManager:
             "aggro_effect_roi": None,
             "aggro_effect_color": asdict(ColorSpec((255, 0, 0))),
             "aggro_duration": 300,
+            # Instance Mode: Aggro strategy and timer options
+            # 'bar' (detect aggro bar), 'timer' (legacy fixed interval), 'hybrid' (either condition)
+            "instance_aggro_strategy": "bar",
+            # Legacy timer interval in minutes (float). Effective min 0.5 min (30s) enforced in code
+            "instance_aggro_interval_min": 15.0,
+            # Start delay seconds applied after each aggro click before the next interval countdown begins
+            "instance_aggro_start_delay_s": 5.0,
+            # Optional jitter for interval (%). When enabled, applies +/- percent randomness
+            "instance_aggro_jitter_enabled": True,
+            "instance_aggro_jitter_percent": 10.0,
             
             # Timeout settings
             "no_monster_timeout": 180,
             "camera_adjust_interval": 10,
-            "emergency_teleport_threshold": 60
+            "emergency_teleport_threshold": 60,
+            # Logging/throttling for instance status lines
+            "instance_status_log_interval": 1.0,
         }
     
     def get(self, key: str, default: Any = None) -> Any:
@@ -360,12 +440,7 @@ class ConfigManager:
             return None
         
         try:
-            return ROI(
-                left=roi_dict["left"],
-                top=roi_dict["top"],
-                width=roi_dict["width"],
-                height=roi_dict["height"]
-            )
+            return ROI.from_dict(roi_dict)
         except (KeyError, ValueError, TypeError) as e:
             logger.error(f"Error creating ROI from {key}: {e}")
             return None

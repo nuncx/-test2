@@ -2,6 +2,7 @@
 Enhanced color editor component for RSPS Color Bot v3
 """
 import logging
+from typing import Any, cast
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QSpinBox, QCheckBox, QGridLayout, QColorDialog,
@@ -21,9 +22,9 @@ class EnhancedColorEditor(QWidget):
     """
     Enhanced editor for ColorSpec objects with HSV support and tooltips
     """
-    
-    colorChanged = pyqtSignal(ColorSpec)
-    
+    # Define Qt signal at class level so instances receive a bound signal with .emit()
+    colorChanged = pyqtSignal(object)
+
     def __init__(self, config_manager, color_key, parent=None, title="Color Settings"):
         """
         Initialize the enhanced color editor
@@ -38,19 +39,21 @@ class EnhancedColorEditor(QWidget):
         self.config_manager = config_manager
         self.color_key = color_key
         self.title = title
-        
+
+    # Note: do not redefine signals on the instance; class-level definition above is required
+
         # Get initial color spec
         self.color_spec = self.config_manager.get_color_spec(color_key)
         if self.color_spec is None:
             # Create default color spec (rgb tuple + defaults)
             self.color_spec = ColorSpec(rgb=(255, 0, 0))
-        
+
         # Initialize UI
         self.init_ui()
-        
+
         # Add tooltips
         self.add_tooltips()
-        
+
         # Update UI with current values
         self.update_ui_from_color_spec()
     
@@ -81,7 +84,7 @@ class EnhancedColorEditor(QWidget):
         
         # HSV tolerances
         hsv_layout.addWidget(QLabel("Hue Tolerance:"), 1, 0)
-        self.h_tol_slider = QSlider(Qt.Horizontal)
+        self.h_tol_slider = QSlider(Qt.Orientation.Horizontal)
         self.h_tol_slider.setRange(0, 30)
         self.h_tol_slider.setValue(self.color_spec.tol_h if hasattr(self.color_spec, 'tol_h') else 5)
         self.h_tol_slider.valueChanged.connect(self.on_h_tol_changed)
@@ -94,7 +97,7 @@ class EnhancedColorEditor(QWidget):
         hsv_layout.addWidget(self.h_tol_spin, 1, 2)
         
         hsv_layout.addWidget(QLabel("Saturation Tolerance:"), 2, 0)
-        self.s_tol_slider = QSlider(Qt.Horizontal)
+        self.s_tol_slider = QSlider(Qt.Orientation.Horizontal)
         self.s_tol_slider.setRange(0, 100)
         self.s_tol_slider.setValue(self.color_spec.tol_s if hasattr(self.color_spec, 'tol_s') else 50)
         self.s_tol_slider.valueChanged.connect(self.on_s_tol_changed)
@@ -107,7 +110,7 @@ class EnhancedColorEditor(QWidget):
         hsv_layout.addWidget(self.s_tol_spin, 2, 2)
         
         hsv_layout.addWidget(QLabel("Value Tolerance:"), 3, 0)
-        self.v_tol_slider = QSlider(Qt.Horizontal)
+        self.v_tol_slider = QSlider(Qt.Orientation.Horizontal)
         self.v_tol_slider.setRange(0, 100)
         self.v_tol_slider.setValue(self.color_spec.tol_v if hasattr(self.color_spec, 'tol_v') else 50)
         self.v_tol_slider.valueChanged.connect(self.on_v_tol_changed)
@@ -250,7 +253,7 @@ class EnhancedColorEditor(QWidget):
         self.config_manager.set_color_spec(self.color_key, color_spec)
         
         # Emit signal
-        self.colorChanged.emit(color_spec)
+        cast(Any, self.colorChanged).emit(color_spec)
     
     def get_color_spec(self):
         """

@@ -75,7 +75,7 @@ class EventSystem:
                 if callback in self._subscribers[event_type]:
                     self._subscribers[event_type].remove(callback)
     
-    def publish(self, event_type: EventType, data: Dict[str, Any] = None) -> None:
+    def publish(self, event_type: EventType, data: Optional[Dict[str, Any]] = None) -> None:
         """
         Publish an event
         
@@ -153,8 +153,12 @@ class BotController:
         try:
             # Local import to avoid circular import during module initialization
             from ..modules.teleport import TeleportManager
-            self.teleport_manager = TeleportManager(self.config_manager, self.action_manager, self.event_system)
-            logger.info("Teleport manager initialized")
+            if self.action_manager is not None:
+                self.teleport_manager = TeleportManager(self.config_manager, self.action_manager, self.event_system)
+                logger.info("Teleport manager initialized")
+            else:
+                self.teleport_manager = None
+                logger.error("Action manager unavailable; teleport manager disabled")
         except Exception as e:
             logger.error(f"Failed to initialize teleport manager: {e}")
             self.teleport_manager = None
@@ -162,8 +166,12 @@ class BotController:
         try:
             # Local import to avoid circular import during module initialization
             from ..modules.potion import PotionManager
-            self.potion_manager = PotionManager(self.config_manager, self.action_manager, self.event_system)
-            logger.info("Potion manager initialized")
+            if self.action_manager is not None:
+                self.potion_manager = PotionManager(self.config_manager, self.action_manager, self.event_system)
+                logger.info("Potion manager initialized")
+            else:
+                self.potion_manager = None
+                logger.error("Action manager unavailable; potion manager disabled")
         except Exception as e:
             logger.error(f"Failed to initialize potion manager: {e}")
             self.potion_manager = None
@@ -194,6 +202,16 @@ class BotController:
         # Simple runtime guards
         self._last_monster_click_time: float = 0.0
         self._last_monster_click_pos: Optional[tuple] = None
+        # Combat timing (normal mode)
+        self._combat_timers = {
+            'attack_grace_until': 0.0,          # after we click a monster, wait at least this long before any new attack
+            'post_combat_cooldown_until': 0.0,  # after combat ends (HP not visible), wait before searching/attacking again
+            'was_in_combat': False,
+        }
+
+        # Post-attack verification (HP bar check and optional one-time retry of weapon switch)
+        self._post_attack_verify_deadline: float = 0.0
+        self._post_attack_retry_done: bool = False
 
         # Global hotkey (F8) to toggle pause/resume
         self._hotkey_listener_thread = threading.Thread(target=self._install_hotkeys, daemon=True)
@@ -407,6 +425,29 @@ class BotController:
         """Get statistics"""
         return self._stats.copy()
 
+    def get_break_countdown(self):
+        """Return a dict with next break countdown or break remaining.
+
+        Returns None if humanization is disabled or scheduling not available.
+        Shape: {'on_break': bool, 'seconds': float}
+        """
+        try:
+            if not bool(self.config_manager.get('humanize_on', True)):
+                return None
+            mgr = getattr(self, '_instance_manager', None)
+            if not mgr:
+                return None
+            now = time.time()
+            if mgr.get('break_active', False):
+                sec = max(0.0, float(mgr.get('break_until', 0.0)) - now)
+                return {'on_break': True, 'seconds': sec}
+            nbt = mgr.get('next_break_time')
+            if nbt is None:
+                return None
+            return {'on_break': False, 'seconds': max(0.0, float(nbt) - now)}
+        except Exception:
+            return None
+
     def get_aggro_remaining_seconds(self) -> Optional[float]:
         """Return seconds remaining until next aggro click in Instance Mode.
 
@@ -493,9 +534,109 @@ class BotController:
                     'execution_time': time.time() - cycle_start,
                     'result': result,
                 })
+
+                # Update combat timers based on state transitions (HP/in_combat)
+                now_ts2 = time.time()
+                was_in = bool(self._combat_timers.get('was_in_combat', False))
+                if was_in and not in_combat:
+                    # Combat ended -> start post-combat cooldown in [min, max]
+                    try:
+                        import random as _rand
+                        min_s = float(self.config_manager.get('post_combat_delay_min_s', 1.0))
+                        max_s = float(self.config_manager.get('post_combat_delay_max_s', 3.0))
+                        if max_s < min_s:
+                            max_s = min_s
+                        wait_s = min_s if max_s == min_s else (min_s + (max_s - min_s) * _rand.random())
+                        self._combat_timers['post_combat_cooldown_until'] = now_ts2 + max(0.0, wait_s)
+                        logger.info(f"Post-combat cooldown started for {wait_s:.1f}s")
+                    except Exception:
+                        # Fallback: use min only
+                        min_s = float(self.config_manager.get('post_combat_delay_min_s', 1.0))
+                        self._combat_timers['post_combat_cooldown_until'] = now_ts2 + max(0.0, min_s)
+                # Track last seen state
+                self._combat_timers['was_in_combat'] = bool(in_combat)
                 
+                # If we recently attacked but HP bar isn't visible yet, and the feature is enabled,
+                # attempt a one-time weapon/style click retry (using detected style) before attacking again.
+                if (not in_combat) and (not hp_seen) and bool(self.config_manager.get('combat_style_enforce', False)):
+                    now_chk = time.time()
+                    # Verification window active
+                    if 0.0 < self._post_attack_verify_deadline and now_chk <= self._post_attack_verify_deadline:
+                        if not self._post_attack_retry_done:
+                            try:
+                                if self.detection_engine is not None:
+                                    logger.info("Post-attack verify window active; attempting one-time weapon/style retry")
+                                    # Detect current style, then try switching to its weapon/style color again
+                                    cur_style = self.detection_engine.detect_combat_style()
+                                    if not cur_style:
+                                        logger.info("Post-attack retry: style not detected in Style ROI; will continue to monitor")
+                                    else:
+                                        pt = self.detection_engine.detect_weapon_for_style(cur_style)
+                                        if pt is not None and self.action_manager:
+                                            logger.info(f"Post-attack retry: switching for style '{cur_style}' at ({pt[0]}, {pt[1]})")
+                                            self.action_manager.mouse_controller.move_and_click(pt[0], pt[1])
+                                            # Allow immediate re-attack by clearing attack grace
+                                            self._combat_timers['attack_grace_until'] = time.time()
+                                            self._post_attack_retry_done = True
+                                            time.sleep(0.15)
+                                        else:
+                                            logger.info("Post-attack retry: linked weapon/style color not visible in Weapon ROI")
+                            except Exception as e:
+                                logger.debug(f"Post-attack retry skipped due to error: {e}")
+                    # If the window expired, clear state and log
+                    elif self._post_attack_verify_deadline > 0.0 and now_chk > self._post_attack_verify_deadline:
+                        logger.info("Post-attack verify window expired without HP bar; proceeding with normal cycle")
+                        self._post_attack_verify_deadline = 0.0
+                        self._post_attack_retry_done = False
+
                 # Click target monster only when not in combat (HP bar not visible)
                 if (not in_combat) and monsters:
+                    # Optional: enforce combat style before attacking using Weapon ROI
+                    try:
+                        if bool(self.config_manager.get('combat_style_enforce', False)) and self.detection_engine is not None:
+                            # Simple cooldown to avoid spamming style clicks
+                            if not hasattr(self, '_style_enforce_until'):
+                                self._style_enforce_until = 0.0  # type: ignore[attr-defined]
+                            now_enf = time.time()
+                            if now_enf >= float(self._style_enforce_until):
+                                # Detect current style; if detected, search Weapon ROI for the linked weapon color and click once
+                                current_style = self.detection_engine.detect_combat_style() or None
+                                if current_style is None:
+                                    logger.info("Combat Style: enabled - style not detected in Style ROI; skipping weapon switch this cycle")
+                                else:
+                                    logger.info(f"Combat Style: enabled - detected style '{current_style}'")
+                                    pt = self.detection_engine.detect_weapon_for_style(current_style)
+                                    if pt is not None and self.action_manager:
+                                        logger.info(f"Combat Style: switching at ({pt[0]}, {pt[1]}) for style '{current_style}'")
+                                        ok = self.action_manager.mouse_controller.move_and_click(pt[0], pt[1])
+                                        if ok:
+                                            # Small grace before attacking to let the style settle
+                                            self._style_enforce_until = time.time() + 1.0
+                                            time.sleep(0.15)
+                                        else:
+                                            logger.info("Combat Style: switch click failed (mouse controller returned False)")
+                                    else:
+                                        # Weapon color not visible in ROI -> attack without switching
+                                        logger.info("Combat Style: linked weapon/style color not visible in Weapon ROI; proceeding to attack")
+                            else:
+                                rem = max(0.0, float(self._style_enforce_until) - now_enf)
+                                logger.info(f"Combat Style: cooldown active ({rem:.1f}s); skipping enforcement this cycle")
+                    except Exception as e:
+                        logger.debug(f"Weapon ROI style enforce skipped due to error: {e}")
+                    # Respect attack grace (immediately after an attack) and post-combat cooldown
+                    now_click2 = time.time()
+                    attack_grace_until = float(self._combat_timers.get('attack_grace_until', 0.0))
+                    post_cc_until = float(self._combat_timers.get('post_combat_cooldown_until', 0.0))
+                    if now_click2 < attack_grace_until:
+                        rem = max(0.0, attack_grace_until - now_click2)
+                        logger.info(f"Attack grace active: {rem:.1f}s remaining; skipping target click")
+                        time.sleep(max(0.01, float(self.config_manager.get('scan_interval', 0.2))))
+                        continue
+                    if now_click2 < post_cc_until:
+                        rem = max(0.0, post_cc_until - now_click2)
+                        logger.info(f"Post-combat cooldown: {rem:.1f}s remaining; skipping target click")
+                        time.sleep(max(0.01, float(self.config_manager.get('scan_interval', 0.2))))
+                        continue
                     try:
                         # Selection strategy: default closest-to-center; optional low-confidence: largest-area
                         low_enabled = bool(self.config_manager.get('low_confidence_click_enabled', True))
@@ -544,6 +685,17 @@ class BotController:
                                 if self.action_manager.mouse_controller.move_and_click(x, y, button='left', clicks=1):
                                     self._last_monster_click_time = now
                                     self._last_monster_click_pos = (x, y)
+                                    # After ATTACK, apply Attack Grace wait
+                                    try:
+                                        grace_s = float(self.config_manager.get('attack_grace_s', self.config_manager.get('post_combat_delay_min_s', 1.0)))
+                                    except Exception:
+                                        grace_s = 1.0
+                                    self._combat_timers['attack_grace_until'] = time.time() + max(0.0, grace_s)
+                                    # Arm post-attack verification window (HP bar should appear within 5s)
+                                    if bool(self.config_manager.get('combat_style_enforce', False)):
+                                        self._post_attack_verify_deadline = time.time() + 5.0
+                                        self._post_attack_retry_done = False
+                                        logger.info("Post-attack verify window armed for 5.0s (waiting for HP bar)")
                                     if use_low_conf:
                                         try:
                                             area_val = float(target.get('area', 0.0))
@@ -593,14 +745,26 @@ class BotController:
         # Initialize instance manager if needed
         if not hasattr(self, '_instance_manager') or self._instance_manager is None:
             self._instance_manager = {
-                'last_aggro_time': 0,
                 'last_teleport_time': 0,
                 'teleport_cooldown': 5.0,  # Cooldown between teleport attempts
-                'next_aggro_time': None,
                 # Post-teleport wait/retry state
                 'post_teleport_active': False,
                 'post_teleport_wait_until': 0.0,
                 'post_teleport_retry_count': 0,
+                # Aggro state
+                'next_aggro_time': None,
+                'aggro_timer_phase': 'interval',  # 'start_delay' or 'interval'
+                # Humanization: simple scheduled breaks
+                'next_break_time': None,
+                'break_active': False,
+                'break_until': 0.0,
+                # Post-aggro wait: observe HP bar/in_combat after clicking aggro
+                'post_aggro_active': False,
+                'post_aggro_wait_until': 0.0,
+                # Aggro click cooldown
+                'last_aggro_click_time': 0.0,
+                # Legacy timer: ensure an initial click as soon as script starts
+                'legacy_initial_clicked': False,
             }
 
         # Extract result data
@@ -621,38 +785,428 @@ class BotController:
             logger.info(f"Instance-Only Mode - Instance empty: {'Y' if instance_empty else 'N'}")
             self._instance_manager['last_status_log_time'] = now_ts
 
-        # Timer-based aggro potion usage (no visual checks)
+        # Humanization: scheduled breaks (applies only when enabled)
         try:
-            detector = self.detection_engine.instance_only_detector
-            aggro_location = detector.get_aggro_potion_location()
+            humanize_on = bool(self.config_manager.get('humanize_on', True))
+            break_every_s = float(self.config_manager.get('break_every_s', 0.0))
+            break_duration_s = float(self.config_manager.get('break_duration_s', 0.0))
         except Exception:
-            aggro_location = None
+            humanize_on, break_every_s, break_duration_s = True, 0.0, 0.0
 
-        # Interval in minutes (default 15)
-        try:
-            interval_min = float(self.config_manager.get('instance_aggro_interval_min', 15.0))
-        except Exception:
-            interval_min = 15.0
-        interval_s = max(10.0, interval_min * 60.0)  # guard: at least 10s
+        now_for_breaks = time.time()
+        mgr = self._instance_manager
+        if humanize_on and break_every_s > 0 and break_duration_s > 0:
+            # Jitter settings from config
+            try:
+                jitter_on = bool(self.config_manager.get('humanize_jitter_enabled', True))
+            except Exception:
+                jitter_on = True
+            try:
+                jitter_pct = float(self.config_manager.get('humanize_jitter_percent', 10.0))
+            except Exception:
+                jitter_pct = 10.0
+            jitter_pct = max(0.0, min(50.0, jitter_pct))  # clamp 0..50
+            jitter_span = (jitter_pct / 100.0) * 2.0  # e.g., 10% -> span 0.2 around 1.0
 
-        now = time.time()
-        if self._instance_manager.get('next_aggro_time') is None:
-            self._instance_manager['next_aggro_time'] = now + interval_s
-
-        if aggro_location and self.action_manager and now >= self._instance_manager['next_aggro_time']:
-            logger.info(f"Aggro timer reached ({interval_min:.1f} min). Clicking aggro at ({aggro_location.x}, {aggro_location.y})")
-            if self.action_manager.mouse_controller.move_and_click(aggro_location.x, aggro_location.y):
-                self._instance_manager['next_aggro_time'] = now + interval_s
-                self._instance_manager['last_aggro_time'] = now
-                # Persist last aggro time for any time-based checks elsewhere
+            # Initialize next break if needed (with randomized interval and duration hint)
+            if mgr.get('next_break_time') is None:
                 try:
-                    self.config_manager.set('last_aggro_time', now)
+                    import random as _rand
+                    if jitter_on and jitter_span > 0:
+                        rand_factor_every = 1.0 + (jitter_span * (_rand.random() - 0.5))
+                        rand_factor_duration = 1.0 + (jitter_span * (_rand.random() - 0.5))
+                    else:
+                        rand_factor_every = 1.0
+                        rand_factor_duration = 1.0
+                    eff_break_every_s = max(1.0, break_every_s * rand_factor_every)
+                    eff_break_duration_s = max(0.5, break_duration_s * rand_factor_duration)
+                except Exception:
+                    eff_break_every_s = break_every_s
+                    eff_break_duration_s = break_duration_s
+                mgr['next_break_time'] = now_for_breaks + eff_break_every_s
+                logger.info(
+                    f"Humanization: scheduling first break in {eff_break_every_s:.1f}s (duration {eff_break_duration_s:.1f}s)"
+                )
+
+            # If a break is currently active, continue to wait and skip actions
+            if mgr.get('break_active', False):
+                remaining = max(0.0, float(mgr.get('break_until', 0.0)) - now_for_breaks)
+                if remaining > 0:
+                    # Log occasionally (throttled by status log interval above)
+                    logger.info(f"Humanization: on break, {remaining:.1f}s remaining")
+                    return
+                else:
+                    # End break and schedule the next one with randomized interval
+                    try:
+                        import random as _rand
+                        if jitter_on and jitter_span > 0:
+                            rand_factor_every = 1.0 + (jitter_span * (_rand.random() - 0.5))
+                        else:
+                            rand_factor_every = 1.0
+                        eff_break_every_s = max(1.0, break_every_s * rand_factor_every)
+                    except Exception:
+                        eff_break_every_s = break_every_s
+                    mgr['break_active'] = False
+                    mgr['break_until'] = 0.0
+                    mgr['next_break_time'] = time.time() + eff_break_every_s
+                    logger.info("Humanization: break ended; scheduling next break; resuming aggro bar checks")
+
+            # Start a new break when due
+            nbt = mgr.get('next_break_time')
+            if nbt is not None and now_for_breaks >= float(nbt):
+                # Randomize duration on each break
+                try:
+                    import random as _rand
+                    if jitter_on and jitter_span > 0:
+                        rand_factor_duration = 1.0 + (jitter_span * (_rand.random() - 0.5))
+                    else:
+                        rand_factor_duration = 1.0
+                    eff_break_duration_s = max(0.5, break_duration_s * rand_factor_duration)
+                except Exception:
+                    eff_break_duration_s = break_duration_s
+                mgr['break_active'] = True
+                mgr['break_until'] = now_for_breaks + eff_break_duration_s
+                logger.info(f"Humanization: starting break for {eff_break_duration_s:.1f}s")
+                return
+
+        # Ensure aggro stays active based on selected strategy: 'bar', 'timer', or 'hybrid'
+        mgr = self._instance_manager
+        detector = None
+        try:
+            if self.detection_engine is not None:
+                detector = self.detection_engine.instance_only_detector
+        except Exception:
+            detector = None
+        if detector is not None and not mgr.get('post_aggro_active', False) and not mgr.get('break_active', False) and not mgr.get('post_teleport_active', False):
+            # Determine strategy
+            try:
+                strategy = str(self.config_manager.get('instance_aggro_strategy', 'bar')).lower()
+            except Exception:
+                strategy = 'bar'
+
+            # Legacy Timer: initial click immediately when script starts
+            if strategy == 'timer' and not bool(mgr.get('legacy_initial_clicked', False)) and self.action_manager:
+                potion = detector.get_aggro_potion_location() if detector is not None else None
+                if potion is not None:
+                    logger.info(f"Legacy timer: initial aggro click at ({potion.x}, {potion.y})")
+                    if self.action_manager.mouse_controller.move_and_click(potion.x, potion.y):
+                        self.event_system.publish(EventType.AGGRO_USED, {'position': (potion.x, potion.y)})
+                        # Post-aggro wait
+                        try:
+                            wait_s = float(self.config_manager.get('instance_post_aggro_hp_wait', 8.0))
+                        except Exception:
+                            wait_s = 8.0
+                        mgr['post_aggro_active'] = True
+                        mgr['post_aggro_wait_until'] = time.time() + max(0.5, wait_s)
+                        mgr['last_aggro_click_time'] = time.time()
+                        mgr['legacy_initial_clicked'] = True
+                        # Schedule next: start delay first, then interval
+                        try:
+                            start_delay_s = float(self.config_manager.get('instance_aggro_start_delay_s', 5.0))
+                        except Exception:
+                            start_delay_s = 5.0
+                        if start_delay_s > 0.0:
+                            mgr['aggro_timer_phase'] = 'start_delay'
+                            mgr['next_aggro_time'] = time.time() + start_delay_s
+                            try:
+                                self.config_manager.set('instance_aggro_timer_phase', 'start_delay')
+                                self.config_manager.set('instance_next_aggro_time_epoch', float(mgr['next_aggro_time']))
+                            except Exception:
+                                pass
+                            logger.info(f"Aggro timer: start delay scheduled in {start_delay_s:.1f}s")
+                        else:
+                            # schedule interval
+                            try:
+                                interval_min = float(self.config_manager.get('instance_aggro_interval_min', 15.0))
+                            except Exception:
+                                interval_min = 15.0
+                            try:
+                                jitter_on = bool(self.config_manager.get('instance_aggro_jitter_enabled', True))
+                            except Exception:
+                                jitter_on = True
+                            try:
+                                jitter_pct = float(self.config_manager.get('instance_aggro_jitter_percent', 10.0))
+                            except Exception:
+                                jitter_pct = 10.0
+                            jitter_pct = max(0.0, min(50.0, jitter_pct))
+                            eff_interval_s = max(1.0, interval_min * 60.0)
+                            try:
+                                import random as _rand
+                                if jitter_on and jitter_pct > 0.0:
+                                    span = (jitter_pct / 100.0) * 2.0
+                                    factor = 1.0 + (span * (_rand.random() - 0.5))
+                                else:
+                                    factor = 1.0
+                                eff_interval_s *= factor
+                            except Exception:
+                                pass
+                            mgr['aggro_timer_phase'] = 'interval'
+                            mgr['next_aggro_time'] = time.time() + eff_interval_s
+                            try:
+                                self.config_manager.set('instance_aggro_timer_phase', 'interval')
+                                self.config_manager.set('instance_next_aggro_time_epoch', float(mgr['next_aggro_time']))
+                            except Exception:
+                                pass
+                            logger.info(f"Aggro timer: next click scheduled in {eff_interval_s:.1f}s")
+                        logger.info(f"Waiting up to {wait_s:.1f}s for HP bar after aggro click.")
+                        return
+
+            # Evaluate aggro bar only if strategy requires it
+            aggro_bar_ok = True  # assume OK unless we check and find absent
+            if strategy in ('bar', 'hybrid'):
+                try:
+                    aggro_bar_ok = bool(detector.detect_aggro_bar_present())
+                except Exception:
+                    aggro_bar_ok = False
+
+            # Manage legacy timer schedule if strategy includes timer
+            now_click = time.time()
+            timer_due = False
+            if strategy in ('timer', 'hybrid'):
+                # External reset trigger from UI
+                try:
+                    if bool(self.config_manager.get('instance_aggro_timer_reset_now', False)):
+                        self.config_manager.set('instance_aggro_timer_reset_now', False)
+                        mgr['next_aggro_time'] = None
+                        mgr['aggro_timer_phase'] = 'start_delay'
+                        logger.info("Aggro timer reset requested: will start with Start Delay phase")
                 except Exception:
                     pass
-                self.event_system.publish(EventType.AGGRO_USED, {
-                    'position': (aggro_location.x, aggro_location.y),
-                    'interval_min': interval_min,
-                })
+                # Ensure next_aggro_time is scheduled
+                if mgr.get('next_aggro_time') is None:
+                    # Determine whether to start with a start delay or go straight into interval
+                    try:
+                        start_delay_s = float(self.config_manager.get('instance_aggro_start_delay_s', 5.0))
+                    except Exception:
+                        start_delay_s = 5.0
+                    if start_delay_s > 0.0:
+                        mgr['aggro_timer_phase'] = 'start_delay'
+                        mgr['next_aggro_time'] = now_click + start_delay_s
+                        try:
+                            self.config_manager.set('instance_aggro_timer_phase', 'start_delay')
+                            self.config_manager.set('instance_next_aggro_time_epoch', float(mgr['next_aggro_time']))
+                        except Exception:
+                            pass
+                        logger.info(f"Aggro timer: start delay scheduled in {start_delay_s:.1f}s")
+                    else:
+                        mgr['aggro_timer_phase'] = 'interval'
+                        try:
+                            interval_min = float(self.config_manager.get('instance_aggro_interval_min', 15.0))
+                        except Exception:
+                            interval_min = 15.0
+                        try:
+                            jitter_on = bool(self.config_manager.get('instance_aggro_jitter_enabled', True))
+                        except Exception:
+                            jitter_on = True
+                        try:
+                            jitter_pct = float(self.config_manager.get('instance_aggro_jitter_percent', 10.0))
+                        except Exception:
+                            jitter_pct = 10.0
+                        jitter_pct = max(0.0, min(50.0, jitter_pct))
+                        eff_interval_s = max(1.0, interval_min * 60.0)
+                        try:
+                            import random as _rand
+                            if jitter_on and jitter_pct > 0.0:
+                                span = (jitter_pct / 100.0) * 2.0
+                                factor = 1.0 + (span * (_rand.random() - 0.5))
+                            else:
+                                factor = 1.0
+                            eff_interval_s *= factor
+                        except Exception:
+                            pass
+                        mgr['next_aggro_time'] = now_click + eff_interval_s
+                        try:
+                            self.config_manager.set('instance_aggro_timer_phase', 'interval')
+                            self.config_manager.set('instance_next_aggro_time_epoch', float(mgr['next_aggro_time']))
+                        except Exception:
+                            pass
+                        logger.info(f"Aggro timer: scheduling next click in {eff_interval_s:.1f}s")
+                # Check if due
+                try:
+                    next_t = float(mgr.get('next_aggro_time') or 0.0)
+                except Exception:
+                    next_t = 0.0
+                timer_due = now_click >= next_t and next_t > 0
+                # If due while in start_delay phase, advance to interval phase without clicking
+                if timer_due and mgr.get('aggro_timer_phase') == 'start_delay':
+                    try:
+                        interval_min = float(self.config_manager.get('instance_aggro_interval_min', 15.0))
+                    except Exception:
+                        interval_min = 15.0
+                    try:
+                        jitter_on = bool(self.config_manager.get('instance_aggro_jitter_enabled', True))
+                    except Exception:
+                        jitter_on = True
+                    try:
+                        jitter_pct = float(self.config_manager.get('instance_aggro_jitter_percent', 10.0))
+                    except Exception:
+                        jitter_pct = 10.0
+                    jitter_pct = max(0.0, min(50.0, jitter_pct))
+                    eff_interval_s = max(1.0, interval_min * 60.0)
+                    try:
+                        import random as _rand
+                        if jitter_on and jitter_pct > 0.0:
+                            span = (jitter_pct / 100.0) * 2.0
+                            factor = 1.0 + (span * (_rand.random() - 0.5))
+                        else:
+                            factor = 1.0
+                        eff_interval_s *= factor
+                    except Exception:
+                        pass
+                    mgr['aggro_timer_phase'] = 'interval'
+                    mgr['next_aggro_time'] = time.time() + eff_interval_s
+                    try:
+                        self.config_manager.set('instance_aggro_timer_phase', 'interval')
+                        self.config_manager.set('instance_next_aggro_time_epoch', float(mgr['next_aggro_time']))
+                    except Exception:
+                        pass
+                    logger.info(f"Aggro timer: start delay completed; next click in {eff_interval_s:.1f}s")
+                    timer_due = False
+
+            # Cooldown logic applies only to the aggro bar path; legacy timer has no cooldown
+            # Determine cooldown settings (minutes preferred, fallback to seconds)
+            try:
+                cooldown_min = float(self.config_manager.get('instance_aggro_click_cooldown_min', 0.0))
+            except Exception:
+                cooldown_min = 0.0
+            if cooldown_min and cooldown_min > 0:
+                cooldown_s = cooldown_min * 60.0
+            else:
+                try:
+                    cooldown_s = float(self.config_manager.get('instance_aggro_click_cooldown', 7.0))
+                except Exception:
+                    cooldown_s = 7.0
+
+            phase = mgr.get('cooldown_phase')
+            cd_until = float(mgr.get('cooldown_until', 0.0))
+            bar_cooldown_active = phase in ('start_delay', 'cooldown') and now_click < cd_until
+
+            # Decide triggers
+            should_click_timer = (strategy in ('timer', 'hybrid')) and bool(timer_due)
+            should_click_bar = (strategy in ('bar', 'hybrid')) and (not aggro_bar_ok)
+
+            # Timer/hybrid (timer due) click path – no cooldown gating
+            if should_click_timer and self.action_manager:
+                potion = detector.get_aggro_potion_location() if detector is not None else None
+                if potion is not None:
+                    logger.info(f"Aggro timer due; clicking aggro potion at ({potion.x}, {potion.y})")
+                    if self.action_manager.mouse_controller.move_and_click(potion.x, potion.y):
+                        self.event_system.publish(EventType.AGGRO_USED, {'position': (potion.x, potion.y)})
+                        try:
+                            wait_s = float(self.config_manager.get('instance_post_aggro_hp_wait', 8.0))
+                        except Exception:
+                            wait_s = 8.0
+                        mgr['post_aggro_active'] = True
+                        mgr['post_aggro_wait_until'] = time.time() + max(0.5, wait_s)
+                        mgr['last_aggro_click_time'] = now_click
+
+                        # Schedule next click for timer: start delay then interval
+                        try:
+                            start_delay_s = float(self.config_manager.get('instance_aggro_start_delay_s', 5.0))
+                        except Exception:
+                            start_delay_s = 5.0
+                        if start_delay_s > 0.0:
+                            mgr['aggro_timer_phase'] = 'start_delay'
+                            mgr['next_aggro_time'] = time.time() + start_delay_s
+                            try:
+                                self.config_manager.set('instance_aggro_timer_phase', 'start_delay')
+                                self.config_manager.set('instance_next_aggro_time_epoch', float(mgr['next_aggro_time']))
+                            except Exception:
+                                pass
+                            logger.info(f"Aggro timer: start delay scheduled in {start_delay_s:.1f}s")
+                        else:
+                            try:
+                                interval_min = float(self.config_manager.get('instance_aggro_interval_min', 15.0))
+                            except Exception:
+                                interval_min = 15.0
+                            try:
+                                jitter_on = bool(self.config_manager.get('instance_aggro_jitter_enabled', True))
+                            except Exception:
+                                jitter_on = True
+                            try:
+                                jitter_pct = float(self.config_manager.get('instance_aggro_jitter_percent', 10.0))
+                            except Exception:
+                                jitter_pct = 10.0
+                            jitter_pct = max(0.0, min(50.0, jitter_pct))
+                            eff_interval_s = max(1.0, interval_min * 60.0)
+                            try:
+                                import random as _rand
+                                if jitter_on and jitter_pct > 0.0:
+                                    span = (jitter_pct / 100.0) * 2.0
+                                    factor = 1.0 + (span * (_rand.random() - 0.5))
+                                else:
+                                    factor = 1.0
+                                eff_interval_s *= factor
+                            except Exception:
+                                pass
+                            mgr['aggro_timer_phase'] = 'interval'
+                            mgr['next_aggro_time'] = time.time() + eff_interval_s
+                            try:
+                                self.config_manager.set('instance_aggro_timer_phase', 'interval')
+                                self.config_manager.set('instance_next_aggro_time_epoch', float(mgr['next_aggro_time']))
+                            except Exception:
+                                pass
+                            logger.info(f"Aggro timer: next click scheduled in {eff_interval_s:.1f}s")
+                        logger.info(f"Waiting up to {wait_s:.1f}s for HP bar after aggro click.")
+                        return
+
+            # Bar/hybrid (bar missing) click path – apply cooldown gating
+            if should_click_bar and self.action_manager:
+                if bar_cooldown_active:
+                    remaining = max(0.0, cd_until - now_click)
+                    phase_str = (phase or '').replace('_', ' ')
+                    logger.info(f"Aggro bar missing but {phase_str} active: {remaining:.1f}s remaining before next click")
+                else:
+                    potion = detector.get_aggro_potion_location() if detector is not None else None
+                    if potion is not None:
+                        logger.info(f"Aggro bar not present; clicking aggro potion at ({potion.x}, {potion.y})")
+                        if self.action_manager.mouse_controller.move_and_click(potion.x, potion.y):
+                            self.event_system.publish(EventType.AGGRO_USED, {'position': (potion.x, potion.y)})
+                            try:
+                                wait_s = float(self.config_manager.get('instance_post_aggro_hp_wait', 8.0))
+                            except Exception:
+                                wait_s = 8.0
+                            mgr['post_aggro_active'] = True
+                            mgr['post_aggro_wait_until'] = time.time() + max(0.5, wait_s)
+                            mgr['last_aggro_click_time'] = time.time()
+
+                            # Set cooldown gating for bar path
+                            try:
+                                start_delay_s = float(self.config_manager.get('instance_aggro_start_delay_s', 5.0))
+                            except Exception:
+                                start_delay_s = 5.0
+                            if start_delay_s > 0.0:
+                                mgr['cooldown_phase'] = 'start_delay'
+                                mgr['cooldown_until'] = time.time() + start_delay_s
+                                logger.info(f"Aggro start delay engaged for {start_delay_s:.1f}s")
+                            else:
+                                mgr['cooldown_phase'] = 'cooldown'
+                                mgr['cooldown_until'] = time.time() + max(0.0, cooldown_s)
+                                logger.info(f"Aggro cooldown engaged for {cooldown_s:.1f}s")
+
+                            logger.info(f"Waiting up to {wait_s:.1f}s for HP bar after aggro click.")
+                            return
+
+        # If we are in a post-aggro waiting window, check for HP bar/in_combat and pause other actions
+        mgr = self._instance_manager
+        if mgr.get('post_aggro_active', False):
+            if hp_seen or in_combat:
+                logger.info("HP bar seen after aggro; combat confirmed. Ending post-aggro wait.")
+                mgr['post_aggro_active'] = False
+                mgr['post_aggro_wait_until'] = 0.0
+                # Continue normal loop
+            else:
+                now_wait = time.time()
+                wait_until = float(mgr.get('post_aggro_wait_until', 0.0))
+                if now_wait < wait_until:
+                    remaining = max(0.0, wait_until - now_wait)
+                    logger.info(f"Waiting for HP after aggro: {remaining:.1f}s remaining")
+                    return
+                else:
+                    # Timeout expired; end wait and continue
+                    logger.info("Post-aggro wait expired without HP bar; continuing.")
+                    mgr['post_aggro_active'] = False
+                    mgr['post_aggro_wait_until'] = 0.0
 
         # Check post-teleport wait/retry flow first
         try:
@@ -688,10 +1242,15 @@ class BotController:
                 return
 
             # Attempt retry: click token -> wait -> click teleport
-            detector = self.detection_engine.instance_only_detector
-            token_location = detector.get_instance_token_location()
-            teleport_location = detector.get_instance_teleport_location()
-            token_delay = detector.get_instance_token_delay()
+            detector = None
+            try:
+                if self.detection_engine is not None:
+                    detector = self.detection_engine.instance_only_detector
+            except Exception:
+                detector = None
+            token_location = detector.get_instance_token_location() if detector is not None else None
+            teleport_location = detector.get_instance_teleport_location() if detector is not None else None
+            token_delay = detector.get_instance_token_delay() if detector is not None else float(self.config_manager.get('instance_token_delay', 2.0))
 
             if token_location and teleport_location and self.action_manager:
                 if now - mgr['last_teleport_time'] >= mgr['teleport_cooldown']:
@@ -705,7 +1264,11 @@ class BotController:
                             mgr['post_teleport_wait_until'] = time.time() + hp_wait_s
                             mgr['post_teleport_active'] = True
                             # After clicking teleport, reset combat flag to allow fresh detection
-                            self.detection_engine.instance_only_detector.in_combat = False
+                            try:
+                                if self.detection_engine is not None:
+                                    self.detection_engine.instance_only_detector.in_combat = False
+                            except Exception:
+                                pass
                             logger.info(
                                 f"Waiting up to {hp_wait_s:.1f}s for HP bar after retry (attempt {mgr['post_teleport_retry_count']})."
                             )
@@ -742,10 +1305,15 @@ class BotController:
                 return
 
             # Get instance token and teleport locations
-            detector = self.detection_engine.instance_only_detector
-            token_location = detector.get_instance_token_location()
-            teleport_location = detector.get_instance_teleport_location()
-            token_delay = detector.get_instance_token_delay()
+            detector = None
+            try:
+                if self.detection_engine is not None:
+                    detector = self.detection_engine.instance_only_detector
+            except Exception:
+                detector = None
+            token_location = detector.get_instance_token_location() if detector is not None else None
+            teleport_location = detector.get_instance_teleport_location() if detector is not None else None
+            token_delay = detector.get_instance_token_delay() if detector is not None else float(self.config_manager.get('instance_token_delay', 2.0))
             
             if token_location and teleport_location and self.action_manager:
                 # Check cooldown
@@ -772,7 +1340,11 @@ class BotController:
                             })
                             
                             # Reset combat status after teleporting
-                            self.detection_engine.instance_only_detector.in_combat = False
+                            try:
+                                if self.detection_engine is not None:
+                                    self.detection_engine.instance_only_detector.in_combat = False
+                            except Exception:
+                                pass
                             # Start post-teleport waiting window
                             mgr['post_teleport_active'] = True
                             mgr['post_teleport_wait_until'] = time.time() + hp_wait_s

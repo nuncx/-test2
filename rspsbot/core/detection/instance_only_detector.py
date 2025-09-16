@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional, Tuple
 from ..config import ConfigManager, ColorSpec, ROI, Coordinate
 from .capture import CaptureService
 from .color_detector import build_mask
+from .color_detector import largest_contour
 
 # Get module logger
 logger = logging.getLogger('rspsbot.core.detection.instance_only_detector')
@@ -150,7 +151,108 @@ class InstanceOnlyDetector:
         return is_visible
     
     
-    # Visual aggro checks removed; timer-based aggro is handled in controller
+    def detect_aggro_and_point(self) -> Tuple[bool, Optional[Tuple[int, int]]]:
+        """
+        Detect aggro potion presence using three colors within an ROI and suggest a click point.
+
+        Returns:
+            (present, (x, y)) where present indicates all three colors exceed their pixel threshold
+            and (x, y) is a centroid within the combined mask in absolute screen coordinates.
+        """
+        # ROI
+        aggro_roi = self.config_manager.get_roi('instance_aggro_roi')
+        if not aggro_roi:
+            logger.debug("Aggro ROI not set")
+            return False, None
+        # Colors
+        c1 = self.config_manager.get_color_spec('instance_aggro_color1')
+        c2 = self.config_manager.get_color_spec('instance_aggro_color2')
+        c3 = self.config_manager.get_color_spec('instance_aggro_color3')
+        if not (c1 and c2 and c3):
+            logger.debug("Aggro colors not fully configured (need 3)")
+            return False, None
+        try:
+            min_pix = int(self.config_manager.get('instance_aggro_min_pixels_per_color', 30))
+        except Exception:
+            min_pix = 30
+
+        # Capture ROI image
+        frame = self.capture_service.capture_region(aggro_roi)
+        if frame is None:
+            return False, None
+
+        try:
+            # Build masks for each color
+            m1, _ = build_mask(frame, c1, step=1, precise=True, min_area=0)
+            m2, _ = build_mask(frame, c2, step=1, precise=True, min_area=0)
+            m3, _ = build_mask(frame, c3, step=1, precise=True, min_area=0)
+
+            import cv2 as _cv
+            ok1 = _cv.countNonZero(m1) >= min_pix
+            ok2 = _cv.countNonZero(m2) >= min_pix
+            ok3 = _cv.countNonZero(m3) >= min_pix
+
+            if not (ok1 and ok2 and ok3):
+                return False, None
+
+            # Combine masks and find a centroid to click
+            combo = _cv.bitwise_or(_cv.bitwise_or(m1, m2), m3)
+            contours, _ = _cv.findContours(combo, _cv.RETR_EXTERNAL, _cv.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                # Fallback: click center of ROI
+                cx = aggro_roi.left + aggro_roi.width // 2
+                cy = aggro_roi.top + aggro_roi.height // 2
+                return True, (cx, cy)
+
+            cnt = largest_contour(list(contours)) or list(contours)[0]
+            M = _cv.moments(cnt)
+            if M.get('m00', 0) != 0:
+                cx_small = int(M['m10'] / M['m00'])
+                cy_small = int(M['m01'] / M['m00'])
+            else:
+                x, y, w, h = _cv.boundingRect(cnt)
+                cx_small = x + w // 2
+                cy_small = y + h // 2
+
+            # Convert to absolute screen coords (step=1)
+            cx = aggro_roi.left + cx_small
+            cy = aggro_roi.top + cy_small
+            return True, (cx, cy)
+        except Exception as e:
+            logger.error(f"Error detecting aggro: {e}")
+            return False, None
+
+    def detect_aggro_bar_present(self) -> bool:
+        """Return True if all three aggro bar colors exceed the pixel threshold within the aggro bar ROI."""
+        aggro_roi = self.config_manager.get_roi('instance_aggro_bar_roi')
+        if not aggro_roi:
+            # Fallback to legacy key to avoid hard break
+            aggro_roi = self.config_manager.get_roi('instance_aggro_roi')
+        if not aggro_roi:
+            return False
+        c1 = self.config_manager.get_color_spec('instance_aggro_bar_color1') or self.config_manager.get_color_spec('instance_aggro_color1')
+        c2 = self.config_manager.get_color_spec('instance_aggro_bar_color2') or self.config_manager.get_color_spec('instance_aggro_color2')
+        c3 = self.config_manager.get_color_spec('instance_aggro_bar_color3') or self.config_manager.get_color_spec('instance_aggro_color3')
+        if not (c1 and c2 and c3):
+            return False
+        try:
+            min_pix = int(self.config_manager.get('instance_aggro_bar_min_pixels_per_color', self.config_manager.get('instance_aggro_min_pixels_per_color', 30)))
+        except Exception:
+            min_pix = 30
+        frame = self.capture_service.capture_region(aggro_roi)
+        if frame is None:
+            return False
+        try:
+            m1, _ = build_mask(frame, c1, step=1, precise=True, min_area=0)
+            m2, _ = build_mask(frame, c2, step=1, precise=True, min_area=0)
+            m3, _ = build_mask(frame, c3, step=1, precise=True, min_area=0)
+            import cv2 as _cv
+            ok1 = _cv.countNonZero(m1) >= min_pix
+            ok2 = _cv.countNonZero(m2) >= min_pix
+            ok3 = _cv.countNonZero(m3) >= min_pix
+            return bool(ok1 and ok2 and ok3)
+        except Exception:
+            return False
     
     def should_teleport_to_instance(self) -> bool:
         """
@@ -198,3 +300,55 @@ class InstanceOnlyDetector:
             float: Delay in seconds
         """
         return self.config_manager.get('instance_token_delay', 2.0)
+
+    # ---------------- Overlay helpers -----------------
+    def compute_aggro_bar_centroid(self) -> Optional[Tuple[int, int]]:
+        """Compute a click point within the Aggro Bar ROI based on combined mask centroid.
+
+        Returns absolute screen coordinates (x, y) or None if unavailable.
+        """
+        try:
+            aggro_roi = self.config_manager.get_roi('instance_aggro_bar_roi')
+            if not aggro_roi:
+                aggro_roi = self.config_manager.get_roi('instance_aggro_roi')
+            if not aggro_roi:
+                return None
+            c1 = self.config_manager.get_color_spec('instance_aggro_bar_color1') or self.config_manager.get_color_spec('instance_aggro_color1')
+            c2 = self.config_manager.get_color_spec('instance_aggro_bar_color2') or self.config_manager.get_color_spec('instance_aggro_color2')
+            c3 = self.config_manager.get_color_spec('instance_aggro_bar_color3') or self.config_manager.get_color_spec('instance_aggro_color3')
+            if not (c1 and c2 and c3):
+                # Return center of ROI as fallback so overlay can still show a point
+                return (
+                    int(aggro_roi.left + aggro_roi.width // 2),
+                    int(aggro_roi.top + aggro_roi.height // 2),
+                )
+            frame = self.capture_service.capture_region(aggro_roi)
+            if frame is None:
+                return None
+            m1, _ = build_mask(frame, c1, step=1, precise=True, min_area=0)
+            m2, _ = build_mask(frame, c2, step=1, precise=True, min_area=0)
+            m3, _ = build_mask(frame, c3, step=1, precise=True, min_area=0)
+            import cv2 as _cv
+            combo = _cv.bitwise_or(_cv.bitwise_or(m1, m2), m3)
+            contours, _ = _cv.findContours(combo, _cv.RETR_EXTERNAL, _cv.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                # Fallback to center of ROI
+                return (
+                    int(aggro_roi.left + aggro_roi.width // 2),
+                    int(aggro_roi.top + aggro_roi.height // 2),
+                )
+            cnt = largest_contour(list(contours)) or list(contours)[0]
+            M = _cv.moments(cnt)
+            if M.get('m00', 0) != 0:
+                cx_small = int(M['m10'] / M['m00'])
+                cy_small = int(M['m01'] / M['m00'])
+            else:
+                x, y, w, h = _cv.boundingRect(cnt)
+                cx_small = x + w // 2
+                cy_small = y + h // 2
+            # Convert to absolute
+            cx = int(aggro_roi.left + cx_small)
+            cy = int(aggro_roi.top + cy_small)
+            return (cx, cy)
+        except Exception:
+            return None

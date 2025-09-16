@@ -239,7 +239,7 @@ class ZoomRoiPickerDialog(QDialog):
         self.setWindowTitle("Pick ROI from Screenshot")
         self.resize(900, 600)
         self._config = config_manager
-        self.result_rect = None  # global QRect
+        self.result_rect = None  # QRect relative to focused window
 
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -273,9 +273,10 @@ class ZoomRoiPickerDialog(QDialog):
         if rect_img.isNull():
             self.reject()
             return
-        # Map image rect to global using window bbox
-        left = self._bbox.get('left', 0) + rect_img.left()
-        top = self._bbox.get('top', 0) + rect_img.top()
+        # Store ROI relative to the focused window to avoid absolute drift when the window moves
+        # Consumers should translate using CaptureService.get_window_bbox() when capturing
+        left = rect_img.left()
+        top = rect_img.top()
         self.result_rect = QRect(left, top, rect_img.width(), rect_img.height())
         self.accept()
 

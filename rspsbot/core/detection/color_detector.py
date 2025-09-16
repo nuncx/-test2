@@ -4,13 +4,97 @@ Color detection utilities for RSPS Color Bot v3
 import logging
 import numpy as np
 import cv2
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, List, Dict, Optional, Any, cast
 from functools import lru_cache
 
 from ..config import ColorSpec
 
 # Get module logger
 logger = logging.getLogger('rspsbot.core.detection.color_detector')
+
+def _lab_delta_e_mask(img_bgr: np.ndarray, target_rgb: Tuple[int, int, int], thr: float) -> np.ndarray:
+    """Compute a binary mask where DeltaE76 to target <= thr."""
+    try:
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        r, g, b = target_rgb
+        sw = np.array([[[b, g, r]]], dtype=np.uint8)
+        tgt_lab = cv2.cvtColor(sw, cv2.COLOR_BGR2LAB)[0, 0].astype(np.int16)
+        # Use squared distance to avoid sqrt and prevent overflow in int16
+        diff = lab.astype(np.int16) - tgt_lab[None, None, :]
+        diff_f = diff.astype(np.int32)
+        d2 = (
+            diff_f[:, :, 0] * diff_f[:, :, 0]
+            + diff_f[:, :, 1] * diff_f[:, :, 1]
+            + diff_f[:, :, 2] * diff_f[:, :, 2]
+        )
+        thr = float(max(0.0, thr))
+        thr2 = thr * thr
+        return ((d2.astype(np.float32) <= thr2).astype(np.uint8) * 255)
+    except Exception:
+        h, w = img_bgr.shape[:2]
+        return np.zeros((h, w), dtype=np.uint8)
+
+def build_mask_precise_small(
+    img_bgr: np.ndarray,
+    color_spec: ColorSpec,
+    config: Optional[Dict[str, Any]] = None,
+    step: int = 1,
+    min_area: int = 0,
+) -> Tuple[np.ndarray, List]:
+    """
+    Build a stricter mask for small ROIs:
+    - Base HSV∩RGB precise mask
+    - Apply S/V minima gating (s >= combat_sat_min, v >= combat_val_min)
+    - Apply Lab ΔE intersection if configured (combat_lab_tolerance > 0)
+    - Apply tunable morphology (combat_morph_open_iters/close)
+    """
+    small = img_bgr[::step, ::step] if step > 1 else img_bgr
+
+    # Base precise mask (HSV∩RGB)
+    mask, _ = build_mask(img_bgr, color_spec, step=step, precise=True, min_area=0)
+
+    # HSV S/V gating
+    try:
+        sat_min = int((config or {}).get('combat_sat_min', 40))
+        val_min = int((config or {}).get('combat_val_min', 40))
+        if sat_min > 0 or val_min > 0:
+            hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+            s = hsv[:, :, 1]
+            v = hsv[:, :, 2]
+            s_ok = (s >= sat_min) if sat_min > 0 else np.ones_like(s, dtype=np.uint8)
+            v_ok = (v >= val_min) if val_min > 0 else np.ones_like(v, dtype=np.uint8)
+            gate = cv2.bitwise_and(s_ok.astype(np.uint8) * 255, v_ok.astype(np.uint8) * 255)
+            mask = cv2.bitwise_and(mask, gate)
+    except Exception:
+        pass
+
+    # Lab ΔE intersection
+    try:
+        lab_thr = float((config or {}).get('combat_lab_tolerance', 0))
+        if lab_thr and lab_thr > 0:
+            r, g, b = int(color_spec.rgb[0]), int(color_spec.rgb[1]), int(color_spec.rgb[2])
+            lab_mask = _lab_delta_e_mask(small, (r, g, b), lab_thr)
+            mask = cv2.bitwise_and(mask, lab_mask)
+    except Exception:
+        pass
+
+    # Morphology
+    try:
+        open_it = int((config or {}).get('combat_morph_open_iters', 1))
+        close_it = int((config or {}).get('combat_morph_close_iters', 1))
+        kernel = np.ones((3, 3), np.uint8)
+        if open_it > 0:
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=open_it)
+        if close_it > 0:
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=close_it)
+    except Exception:
+        pass
+
+    # Contours and area filter
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    min_area_scaled = min_area / (step * step if step > 0 else 1)
+    filtered = [cnt for cnt in contours if cv2.contourArea(cnt) >= min_area_scaled]
+    return mask, filtered if filtered else []
 
 @lru_cache(maxsize=256)
 def rgb_to_hsv_cached(r: int, g: int, b: int) -> Tuple[int, int, int]:
@@ -23,7 +107,7 @@ def rgb_to_hsv_cached(r: int, g: int, b: int) -> Tuple[int, int, int]:
     Returns:
         Tuple of HSV values (H: 0-179, S: 0-255, V: 0-255)
     """
-    swatch = np.uint8([[[b, g, r]]])  # OpenCV uses BGR input
+    swatch = np.array([[[b, g, r]]], dtype=np.uint8)  # OpenCV uses BGR input
     hsv = cv2.cvtColor(swatch, cv2.COLOR_BGR2HSV)[0, 0]
     return int(hsv[0]), int(hsv[1]), int(hsv[2])
 
@@ -68,7 +152,9 @@ def build_mask(
         upper1 = np.array([high_h, min(255, s0 + color_spec.tol_s), min(255, v0 + color_spec.tol_v)], dtype=np.uint8)
         lower2 = np.array([low_h, max(0, s0 - color_spec.tol_s), max(0, v0 - color_spec.tol_v)], dtype=np.uint8)
         upper2 = np.array([179, min(255, s0 + color_spec.tol_s), min(255, v0 + color_spec.tol_v)], dtype=np.uint8)
-        mask_hsv = cv2.inRange(hsv, lower1, upper1) | cv2.inRange(hsv, lower2, upper2)
+        m1 = cv2.inRange(hsv, lower1, upper1)
+        m2 = cv2.inRange(hsv, lower2, upper2)
+        mask_hsv = cv2.bitwise_or(m1, m2)
     
     # Create RGB mask
     b0, g0, r0 = color_spec.rgb[2], color_spec.rgb[1], color_spec.rgb[0]
@@ -102,7 +188,7 @@ def build_mask_multi(
     step: int = 1,
     precise: bool = True,
     min_area: int = 15,
-    config: Dict = None
+    config: Optional[Dict[str, Any]] = None
 ) -> Tuple[np.ndarray, List]:
     """
     Build a binary mask for multiple color specifications (OR combination)
@@ -118,19 +204,19 @@ def build_mask_multi(
     Returns:
         Tuple of (mask, contours)
     """
+    h, w = img_bgr.shape[:2]
+    out_h = h if step <= 1 else max(1, h // step)
+    out_w = w if step <= 1 else max(1, w // step)
     if not color_specs:
-        h, w = img_bgr.shape[:2]
-        out_h = h if step <= 1 else (h // step)
-        out_w = w if step <= 1 else (w // step)
         return np.zeros((out_h, out_w), dtype=np.uint8), []
-    
-    # Start with empty mask
-    mask_or = None
+
+    # Start with zero mask
+    mask_or: np.ndarray = np.zeros((out_h, out_w), dtype=np.uint8)
     
     # OR masks for each color
     for spec in color_specs:
         m, _ = build_mask(img_bgr, spec, step, precise, min_area=0)
-        mask_or = m if mask_or is None else cv2.bitwise_or(mask_or, m)
+        mask_or = cv2.bitwise_or(mask_or, m)
     
     # Apply additional processing if config is provided
     if config is not None:
@@ -147,7 +233,7 @@ def build_mask_multi(
             s_ok = (s >= sat_min) if sat_min > 0 else np.ones_like(s, dtype=np.uint8)
             v_ok = (v >= val_min) if val_min > 0 else np.ones_like(v, dtype=np.uint8)
             
-            gate = cv2.bitwise_and(s_ok.astype(np.uint8)*255, v_ok.astype(np.uint8)*255)
+            gate = cv2.bitwise_and(s_ok.astype(np.uint8) * 255, v_ok.astype(np.uint8) * 255)
             mask_or = cv2.bitwise_and(mask_or, gate)
         
         # Exclude tile color region
@@ -180,22 +266,28 @@ def build_mask_multi(
         if config.get('monster_use_lab_assist', False):
             small = img_bgr[::step, ::step] if step > 1 else img_bgr
             lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
-            
-            lab_union = None
+            lab_union: Optional[np.ndarray] = None
             for spec in color_specs:
                 # Convert RGB target to Lab
                 r, g, b = spec.rgb
-                sw = np.uint8([[[b, g, r]]])
+                sw = np.array([[[b, g, r]]], dtype=np.uint8)
                 tgt_lab = cv2.cvtColor(sw, cv2.COLOR_BGR2LAB)[0, 0].astype(np.int16)
                 
-                # Compute DeltaE (CIE76 approximation)
+                # Compute squared DeltaE (CIE76 approximation) to avoid sqrt/overflow
                 diff = lab.astype(np.int16) - tgt_lab[None, None, :]
-                dE = np.sqrt((diff[:, :, 0]**2) + (diff[:, :, 1]**2) + (diff[:, :, 2]**2)).astype(np.float32)
-                
+                diff_f = diff.astype(np.int32)
+                d2 = (
+                    diff_f[:, :, 0] * diff_f[:, :, 0]
+                    + diff_f[:, :, 1] * diff_f[:, :, 1]
+                    + diff_f[:, :, 2] * diff_f[:, :, 2]
+                )
                 thr = float(config.get('monster_lab_tolerance', 18))
-                m = (dE <= thr).astype(np.uint8) * 255
-                
-                lab_union = m if lab_union is None else cv2.bitwise_or(lab_union, m)
+                thr2 = thr * thr
+                m = (d2.astype(np.float32) <= thr2).astype(np.uint8) * 255
+                if lab_union is None:
+                    lab_union = m.copy()
+                else:
+                    lab_union = cv2.bitwise_or(lab_union, m)
             
             # Combine Lab assist with existing mask
             if lab_union is not None:
@@ -312,7 +404,7 @@ def closest_contour_to_point(
         d2 = dx * dx + dy * dy
         
         # Update best if closer
-        if best is None or d2 < best_d2:
+        if best is None or best_d2 is None or d2 < best_d2:
             best = c
             best_d2 = d2
     
