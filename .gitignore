@@ -39,7 +39,9 @@ htmlcov/
 Thumbs.db
 
 # Project outputs and logs
-logs/
+# Keep logs dir but ignore its contents except .gitkeep
+logs/*
+!logs/.gitkeep
 outputs/
 
 # Python caches
@@ -48,5 +50,7 @@ outputs/
 # Jupyter
 .ipynb_checkpoints/
 
-# Local profiles (uncomment if you don't want to commit profiles)
-# profiles/*.json
+# Local profiles (ignored by default; commit curated samples explicitly)
+profiles/*.json
+!profiles/README.md
+!profiles/.gitkeep
