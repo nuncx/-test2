@@ -83,88 +83,6 @@ class CombatPanel(QWidget):
 
         hpbar_layout.addWidget(hpbar_roi_group)
 
-        # 1 Tele 1 Kill Mode Group - NEW FEATURE
-        telekill_group = QGroupBox("1 Tele 1 Kill Mode")
-        telekill_layout = QVBoxLayout(telekill_group)
-        
-        # Enable 1 Tele 1 Kill
-        enable_telekill_layout = QHBoxLayout()
-        self.enable_telekill_checkbox = QCheckBox("Enable 1 Tele 1 Kill Mode")
-        self.enable_telekill_checkbox.setChecked(self.config_manager.get('enable_telekill', False))
-        self.enable_telekill_checkbox.toggled.connect(self.on_enable_telekill_toggled)
-        enable_telekill_layout.addWidget(self.enable_telekill_checkbox)
-        enable_telekill_layout.addStretch()
-        telekill_layout.addLayout(enable_telekill_layout)
-        
-        # Teleport ROI selection
-        tele_roi_group = QGroupBox("Teleport ROI")
-        tele_roi_layout = QVBoxLayout(tele_roi_group)
-        
-        tele_roi_row = QHBoxLayout()
-        self.tele_roi_label = QLabel(self._roi_text(self.config_manager.get('telekill_teleport_roi')))
-        tele_roi_row.addWidget(self.tele_roi_label)
-        tele_roi_row.addStretch()
-        self.tele_roi_pick_btn = QPushButton("Pick Teleport ROI")
-        self.tele_roi_pick_btn.clicked.connect(self.on_pick_tele_roi)
-        tele_roi_row.addWidget(self.tele_roi_pick_btn)
-        self.tele_roi_clear_btn = QPushButton("Clear")
-        self.tele_roi_clear_btn.clicked.connect(self.on_clear_tele_roi)
-        tele_roi_row.addWidget(self.tele_roi_clear_btn)
-        tele_roi_layout.addLayout(tele_roi_row)
-        
-        telekill_layout.addWidget(tele_roi_group)
-        
-        # Teleport hotkey
-        hotkey_layout = QHBoxLayout()
-        hotkey_layout.addWidget(QLabel("Teleport Hotkey:"))
-        self.tele_hotkey_input = QLineEdit()
-        self.tele_hotkey_input.setText(self.config_manager.get('telekill_hotkey', 'ctrl+t'))
-        self.tele_hotkey_input.setPlaceholderText("e.g., ctrl+t, f1, shift+f2")
-        self.tele_hotkey_input.textChanged.connect(self.on_tele_hotkey_changed)
-        hotkey_layout.addWidget(self.tele_hotkey_input)
-        hotkey_layout.addStretch()
-        telekill_layout.addLayout(hotkey_layout)
-        
-        # Timing settings
-        timing_layout = QGridLayout()
-        
-        timing_layout.addWidget(QLabel("Search Delay Min:"), 0, 0)
-        self.search_delay_min_spin = QDoubleSpinBox()
-        self.search_delay_min_spin.setRange(0.1, 10.0)
-        self.search_delay_min_spin.setDecimals(2)
-        self.search_delay_min_spin.setSingleStep(0.05)
-        self.search_delay_min_spin.setValue(self.config_manager.get('telekill_search_delay_min_s', 0.5))
-        self.search_delay_min_spin.setSuffix(" s")
-        self.search_delay_min_spin.valueChanged.connect(self.on_search_delay_min_changed)
-        timing_layout.addWidget(self.search_delay_min_spin, 0, 1)
-        
-        timing_layout.addWidget(QLabel("Search Delay Max:"), 1, 0)
-        self.search_delay_max_spin = QDoubleSpinBox()
-        self.search_delay_max_spin.setRange(0.1, 10.0)
-        self.search_delay_max_spin.setDecimals(2)
-        self.search_delay_max_spin.setSingleStep(0.05)
-        self.search_delay_max_spin.setValue(self.config_manager.get('telekill_search_delay_max_s', 2.0))
-        self.search_delay_max_spin.setSuffix(" s")
-        self.search_delay_max_spin.valueChanged.connect(self.on_search_delay_max_changed)
-        timing_layout.addWidget(self.search_delay_max_spin, 1, 1)
-        
-        timing_layout.addWidget(QLabel("Cycle Delay:"), 2, 0)
-        self.cycle_delay_spin = QDoubleSpinBox()
-        self.cycle_delay_spin.setRange(0.5, 30.0)
-        self.cycle_delay_spin.setDecimals(1)
-        self.cycle_delay_spin.setSingleStep(0.1)
-        self.cycle_delay_spin.setValue(self.config_manager.get('telekill_cycle_delay_s', 5.0))
-        self.cycle_delay_spin.setSuffix(" s")
-        self.cycle_delay_spin.valueChanged.connect(self.on_cycle_delay_changed)
-        timing_layout.addWidget(self.cycle_delay_spin, 2, 1)
-        
-        telekill_layout.addLayout(timing_layout)
-        
-        telekill_layout.addWidget(tele_roi_group)
-        
-        # Add 1 Tele 1 Kill group to main layout
-        main_layout.addWidget(telekill_group)
-
         # HP bar settings
         settings_layout = QGridLayout()
         
@@ -227,8 +145,6 @@ class CombatPanel(QWidget):
         timing_layout.addLayout(post_combat_layout)
         
         # Add timing group to main layout
-
-        # 1 Tele 1 Kill Mode Group - NEW FEATURE\n        telekill_group = QGroupBox("1 Tele 1 Kill Mode")\n        telekill_layout = QVBoxLayout(telekill_group)\n        \n        # Enable 1 Tele 1 Kill\n        enable_telekill_layout = QHBoxLayout()\n        self.enable_telekill_checkbox = QCheckBox("Enable 1 Tele 1 Kill Mode")\n        self.enable_telekill_checkbox.setChecked(self.config_manager.get('enable_telekill', False))\n        self.enable_telekill_checkbox.toggled.connect(self.on_enable_telekill_toggled)\n        enable_telekill_layout.addWidget(self.enable_telekill_checkbox)\n        enable_telekill_layout.addStretch()\n        telekill_layout.addLayout(enable_telekill_layout)\n        \n        # Teleport hotkey\n        hotkey_layout = QHBoxLayout()\n        hotkey_layout.addWidget(QLabel("Teleport Hotkey:"))\n        self.tele_hotkey_input = QLineEdit()\n        self.tele_hotkey_input.setText(self.config_manager.get('telekill_hotkey', 'ctrl+t'))\n        self.tele_hotkey_input.setPlaceholderText("e.g., ctrl+t, f1, shift+f2")\n        self.tele_hotkey_input.textChanged.connect(self.on_tele_hotkey_changed)\n        hotkey_layout.addWidget(self.tele_hotkey_input)\n        hotkey_layout.addStretch()\n        telekill_layout.addLayout(hotkey_layout)\n        \n        # Timing settings\n        timing_layout = QGridLayout()\n        \n        timing_layout.addWidget(QLabel("Search Delay Min:"), 0, 0)\n        self.search_delay_min_spin = QDoubleSpinBox()\n        self.search_delay_min_spin.setRange(0.1, 10.0)\n        self.search_delay_min_spin.setDecimals(2)\n        self.search_delay_min_spin.setSingleStep(0.05)\n        self.search_delay_min_spin.setValue(self.config_manager.get('telekill_search_delay_min_s', 0.5))\n        self.search_delay_min_spin.setSuffix(" s")\n        self.search_delay_min_spin.valueChanged.connect(self.on_search_delay_min_changed)\n        timing_layout.addWidget(self.search_delay_min_spin, 0, 1)\n        \n        timing_layout.addWidget(QLabel("Search Delay Max:"), 1, 0)\n        self.search_delay_max_spin = QDoubleSpinBox()\n        self.search_delay_max_spin.setRange(0.1, 10.0)\n        self.search_delay_max_spin.setDecimals(2)\n        self.search_delay_max_spin.setSingleStep(0.05)\n        self.search_delay_max_spin.setValue(self.config_manager.get('telekill_search_delay_max_s', 2.0))\n        self.search_delay_max_spin.setSuffix(" s")\n        self.search_delay_max_spin.valueChanged.connect(self.on_search_delay_max_changed)\n        timing_layout.addWidget(self.search_delay_max_spin, 1, 1)\n        \n        timing_layout.addWidget(QLabel("Cycle Delay:"), 2, 0)\n        self.cycle_delay_spin = QDoubleSpinBox()\n        self.cycle_delay_spin.setRange(0.5, 30.0)\n        self.cycle_delay_spin.setDecimals(1)\n        self.cycle_delay_spin.setSingleStep(0.1)\n        self.cycle_delay_spin.setValue(self.config_manager.get('telekill_cycle_delay_s', 5.0))\n        self.cycle_delay_spin.setSuffix(" s")\n        self.cycle_delay_spin.valueChanged.connect(self.on_cycle_delay_changed)\n        timing_layout.addWidget(self.cycle_delay_spin, 2, 1)\n        \n        telekill_layout.addLayout(timing_layout)\n        \n        # Add 1 Tele 1 Kill group to main layout\n        main_layout.addWidget(telekill_group)
         main_layout.addWidget(timing_group)
         
         # Camera adjustment group
@@ -386,11 +302,6 @@ class CombatPanel(QWidget):
         self.config_manager.set('cam_adjust_gap_s', value)
     
     def on_micro_adjust_every_changed(self, value):
-
-    # 1 Tele 1 Kill Feature - NEW METHODS\n    def on_enable_telekill_toggled(self, checked):\n        """Handle 1 Tele 1 Kill mode toggle"""\n        logger.debug(f"1 Tele 1 Kill mode {enabled if checked else disabled}")\n        self.config_manager.set('enable_telekill', checked)\n        \n        # Notify bot controller if it exists\n        if self.bot_controller and hasattr(self.bot_controller, 'on_telekill_mode_changed'):\n            self.bot_controller.on_telekill_mode_changed(checked)\n    \n    def on_tele_hotkey_changed(self, text):\n        """Handle teleport hotkey change"""\n        hotkey = text.strip()\n        if hotkey:\n            logger.debug(f"Teleport hotkey set to {hotkey}")\n            self.config_manager.set('telekill_hotkey', hotkey)\n    \n    def on_search_delay_min_changed(self, value):\n        """Handle search delay min change"""\n        logger.debug(f"Search delay min set to {value} seconds")\n        self.config_manager.set('telekill_search_delay_min_s', value)\n        \n        # Ensure max is not less than min\n        if value > self.search_delay_max_spin.value():\n            self.search_delay_max_spin.setValue(value)\n    \n    def on_search_delay_max_changed(self, value):\n        """Handle search delay max change"""\n        logger.debug(f"Search delay max set to {value} seconds")\n        self.config_manager.set('telekill_search_delay_max_s', value)\n        \n        # Ensure min is not greater than max\n        if value < self.search_delay_min_spin.value():\n            self.search_delay_min_spin.setValue(value)\n    \n    def on_cycle_delay_changed(self, value):\n        """Handle cycle delay change"""\n        logger.debug(f"Cycle delay set to {value} seconds")\n        self.config_manager.set('telekill_cycle_delay_s', value)
-
-    # 1 Tele 1 Kill Feature - NEW METHODS
-    def on_enable_telekill_toggled(self, checked):\n        """Handle 1 Tele 1 Kill mode toggle"""\n        logger.debug(f"1 Tele 1 Kill mode {enabled if checked else disabled}")\n        self.config_manager.set('enable_telekill', checked)\n        \n        # Notify bot controller if it exists\n        if self.bot_controller and hasattr(self.bot_controller, 'on_telekill_mode_changed'):\n            self.bot_controller.on_telekill_mode_changed(checked)\n    \n    def on_pick_tele_roi(self):\n        """Handle pick teleport ROI button click"""\n        logger.info("Picking teleport ROI from screen")\n        try:\n            current_roi = self.config_manager.get('telekill_teleport_roi')\n            new_roi = ZoomRoiPickerDialog.pick_roi(\n                self,\n                current_roi,\n                title="Pick Teleport ROI",\n                instruction="Click and drag to select the teleport button region"\n            )\n            if new_roi:\n                self.config_manager.set('telekill_teleport_roi', new_roi)\n                self.tele_roi_label.setText(self._roi_text(new_roi))\n                logger.info(f"Teleport ROI set: {new_roi}")\n        except Exception as e:\n            logger.error(f"Error picking teleport ROI: {e}")\n    \n    def on_clear_tele_roi(self):\n        """Handle clear teleport ROI button click"""\n        logger.info("Clearing teleport ROI")\n        self.config_manager.set('telekill_teleport_roi', None)\n        self.tele_roi_label.setText("No ROI set")\n        logger.info("Teleport ROI cleared")\n    \n    def on_tele_hotkey_changed(self, text):\n        """Handle teleport hotkey change"""\n        hotkey = text.strip()\n        if hotkey:\n            logger.debug(f"Teleport hotkey set to {hotkey}")\n            self.config_manager.set('telekill_hotkey', hotkey)\n    \n    def on_search_delay_min_changed(self, value):\n        """Handle search delay min change"""\n        logger.debug(f"Search delay min set to {value} seconds")\n        self.config_manager.set('telekill_search_delay_min_s', value)\n        \n        # Ensure max is not less than min\n        if value > self.search_delay_max_spin.value():\n            self.search_delay_max_spin.setValue(value)\n    \n    def on_search_delay_max_changed(self, value):\n        """Handle search delay max change"""\n        logger.debug(f"Search delay max set to {value} seconds")\n        self.config_manager.set('telekill_search_delay_max_s', value)\n        \n        # Ensure min is not greater than max\n        if value < self.search_delay_min_spin.value():\n            self.search_delay_min_spin.setValue(value)\n    \n    def on_cycle_delay_changed(self, value):\n        """Handle cycle delay change"""\n        logger.debug(f"Cycle delay set to {value} seconds")\n        self.config_manager.set('telekill_cycle_delay_s', value)
         """Handle micro adjust every change"""
         logger.debug(f"Micro adjust every set to {value} loops")
         self.config_manager.set('micro_adjust_every_loops', value)

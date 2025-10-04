@@ -208,6 +208,14 @@ class ConfigManager:
             "hpbar_min_pixel_matches": 150,
             "post_combat_delay_min_s": 1.0,
             "post_combat_delay_max_s": 3.0,
+
+               # 1 Tele 1 Kill settings - NEW FEATURE
+               "enable_telekill": False,
+               "telekill_teleport_roi": None,
+               "telekill_hotkey": "ctrl+t",
+               "telekill_search_delay_min_s": 0.5,
+               "telekill_search_delay_max_s": 2.0,
+               "telekill_cycle_delay_s": 5.0,
             "combat_not_seen_timeout_s": 10.0,
             "combat_leave_immediately": True,
             "skip_detection_when_in_combat": True,
@@ -548,3 +556,10 @@ class ConfigManager:
         self._config = self._get_default_config()
         self.current_profile = None
         logger.info("Configuration reset to defaults")
+        # 1 Tele 1 Kill settings - NEW FEATURE
+        "enable_telekill": False,
+        "telekill_teleport_roi": None,
+        "telekill_hotkey": "ctrl+t",
+        "telekill_search_delay_min_s": 0.5,
+        "telekill_search_delay_max_s": 2.0,
+        "telekill_cycle_delay_s": 5.0,
