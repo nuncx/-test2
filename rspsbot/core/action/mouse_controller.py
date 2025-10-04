@@ -99,7 +99,8 @@ class MouseController:
         move_duration: Optional[float] = None,
         click_delay: Optional[float] = None,
         post_click_sleep: Optional[float] = None,
-        enforce_guard: bool = True
+        enforce_guard: bool = True,
+        clamp_to_search_roi: bool = True
     ) -> bool:
         """
         Move mouse to position and click
@@ -122,15 +123,60 @@ class MouseController:
                 return False
         
         try:
+            # Constrain target to search ROI if configured
+            orig_x, orig_y = x, y
+            roi = None
+            try:
+                roi = self.config_manager.get('search_roi') or None
+                # Normalize ROI to absolute coordinates if it's window-relative or percent
+                if roi and isinstance(roi, dict):
+                    mode = str(roi.get('mode', 'absolute')).lower()
+                    if mode in ('relative', 'percent'):
+                        try:
+                            from ..detection.capture import CaptureService  # type: ignore
+                            bbox = CaptureService().get_window_bbox()
+                            l = int(roi.get('left', 0)); t = int(roi.get('top', 0))
+                            w = int(roi.get('width', 0)); h = int(roi.get('height', 0))
+                            if mode == 'percent':
+                                lf = float(roi.get('left', 0.0)); tf = float(roi.get('top', 0.0))
+                                wf = float(roi.get('width', 0.0)); hf = float(roi.get('height', 0.0))
+                                roi = {
+                                    'left': int(bbox['left'] + lf * bbox['width']),
+                                    'top': int(bbox['top'] + tf * bbox['height']),
+                                    'width': int(max(1, wf * bbox['width'])),
+                                    'height': int(max(1, hf * bbox['height']))
+                                }
+                            else:
+                                roi = {
+                                    'left': int(bbox['left']) + l,
+                                    'top': int(bbox['top']) + t,
+                                    'width': w,
+                                    'height': h
+                                }
+                        except Exception:
+                            # Fall back to raw ROI
+                            pass
+            except Exception:
+                roi = None
+            if clamp_to_search_roi and roi:
+                left = int(roi.get('left', 0)); top = int(roi.get('top', 0))
+                right = left + int(roi.get('width', 0)) - 1
+                bottom = top + int(roi.get('height', 0)) - 1
+                x = min(max(x, left), right)
+                y = min(max(y, top), bottom)
+                if self.config_manager.get('click_debug_logging', False) and (x != orig_x or y != orig_y):
+                    logger.info(f"ClickClamp original=({orig_x},{orig_y}) clamped=({x},{y}) roi=({left},{top},{roi.get('width',0)}x{roi.get('height',0)})")
             # Move mouse
             if not self.move_to(x, y, duration=move_duration):
                 return False
             
             # Delay before click
             if click_delay is None:
-                click_delay = self.config_manager.get('click_delay', 0.05)
-            
-            self._human_pause(click_delay)
+                click_delay = float(self.config_manager.get('click_delay', 0.05))
+            else:
+                click_delay = float(click_delay)
+
+            self._human_pause(float(click_delay))
             
             # Click
             pyautogui.mouseDown(button=button)
@@ -150,9 +196,11 @@ class MouseController:
             
             # Sleep after click
             if post_click_sleep is None:
-                post_click_sleep = self.config_manager.get('click_after_found_sleep', 0.4)
-            
-            self._human_pause(post_click_sleep)
+                post_click_sleep = float(self.config_manager.get('click_after_found_sleep', 0.4))
+            else:
+                post_click_sleep = float(post_click_sleep)
+
+            self._human_pause(float(post_click_sleep))
             
             return True
         

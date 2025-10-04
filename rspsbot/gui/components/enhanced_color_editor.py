@@ -263,3 +263,31 @@ class EnhancedColorEditor(QWidget):
             ColorSpec: Current color spec
         """
         return self.color_spec
+
+    def set_color_spec(self, color_spec_dict_or_obj: Any):
+        """Set the editor's color spec from a dict or ColorSpec and refresh UI + persist.
+
+        Accepts either a dict with keys matching ColorSpec or a ColorSpec instance.
+        """
+        try:
+            if isinstance(color_spec_dict_or_obj, ColorSpec):
+                self.color_spec = color_spec_dict_or_obj
+            elif isinstance(color_spec_dict_or_obj, dict):
+                rgb = color_spec_dict_or_obj.get('rgb', (255, 0, 0))
+                if isinstance(rgb, list):
+                    rgb = tuple(rgb)
+                self.color_spec = ColorSpec(
+                    rgb=rgb,
+                    tol_rgb=color_spec_dict_or_obj.get('tol_rgb', 8),
+                    use_hsv=color_spec_dict_or_obj.get('use_hsv', True),
+                    tol_h=color_spec_dict_or_obj.get('tol_h', 4),
+                    tol_s=color_spec_dict_or_obj.get('tol_s', 30),
+                    tol_v=color_spec_dict_or_obj.get('tol_v', 30)
+                )
+            else:
+                return
+            # Persist and refresh UI
+            self.config_manager.set_color_spec(self.color_key, self.color_spec)
+            self.update_ui_from_color_spec()
+        except Exception as e:
+            logger.error(f"Failed to set color spec in EnhancedColorEditor: {e}")

@@ -124,6 +124,46 @@ class AdvancedROISelector(QWidget):
         
         # Add tooltips
         self.add_tooltips()
+        
+        # Dialog compatibility flags
+        self._accepted = False
+    
+    # Provide dialog-like constants
+    Accepted = 1
+    Rejected = 0
+
+    def exec_(self):  # noqa: D401
+        """Provide a dialog-like exec_ interface.
+        Since this widget isn't a QDialog, we emulate a simple blocking modal by creating a transient
+        QDialog container with this widget embedded. This preserves existing code that expects
+        picker.exec_() returning Accepted/Rejected.
+        """
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout
+        dlg = QDialog(parent=self.parent())
+        dlg.setWindowTitle(self.title)
+        layout = QVBoxLayout(dlg)
+        # Reparent self into dialog
+        self.setParent(dlg)
+        layout.addWidget(self)
+        # Add OK/Cancel buttons
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        btn_layout.addStretch()
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        def on_ok():
+            self._accepted = True
+            dlg.accept()
+        def on_cancel():
+            self._accepted = False
+            dlg.reject()
+        ok_btn.clicked.connect(on_ok)
+        cancel_btn.clicked.connect(on_cancel)
+        res = dlg.exec_()
+        return AdvancedROISelector.Accepted if (res == QDialog.Accepted and self._accepted) else AdvancedROISelector.Rejected
     
     def init_ui(self):
         """Initialize the UI components"""

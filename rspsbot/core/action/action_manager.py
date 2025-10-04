@@ -92,7 +92,10 @@ class ClickAction(Action):
         cooldown: float = 0,
         priority: int = 0,
         pre_action: Optional[Callable[[], bool]] = None,
-        post_action: Optional[Callable[[], bool]] = None
+        post_action: Optional[Callable[[], bool]] = None,
+        *,
+        enforce_guard: bool = True,
+        clamp_to_search_roi: bool = True
     ):
         """
         Initialize a click action
@@ -115,6 +118,9 @@ class ClickAction(Action):
         self.cooldown = cooldown
         self.pre_action = pre_action
         self.post_action = post_action
+        # Advanced click options (default preserve legacy behavior)
+        self.enforce_guard = enforce_guard
+        self.clamp_to_search_roi = clamp_to_search_roi
     
     def execute(self, mouse_controller: MouseController) -> bool:
         """
@@ -148,7 +154,9 @@ class ClickAction(Action):
             self.x,
             self.y,
             button=self.button,
-            clicks=self.clicks
+            clicks=self.clicks,
+            enforce_guard=self.enforce_guard,
+            clamp_to_search_roi=self.clamp_to_search_roi
         )
         
         # Update execution time and counters
@@ -391,7 +399,10 @@ class ActionManager:
         cooldown: float = 0,
         priority: int = 0,
         pre_action: Optional[Callable[[], bool]] = None,
-        post_action: Optional[Callable[[], bool]] = None
+        post_action: Optional[Callable[[], bool]] = None,
+        *,
+        enforce_guard: bool = True,
+        clamp_to_search_roi: bool = True
     ) -> bool:
         """
         Register a click action
@@ -409,7 +420,11 @@ class ActionManager:
         Returns:
             True if action was registered, False otherwise
         """
-        action = ClickAction(name, x, y, button, clicks, cooldown, priority, pre_action, post_action)
+        action = ClickAction(
+            name, x, y, button, clicks, cooldown, priority, pre_action, post_action,
+            enforce_guard=enforce_guard,
+            clamp_to_search_roi=clamp_to_search_roi
+        )
         return self.register_action(action)
     
     def register_key_action(
@@ -487,7 +502,10 @@ class ActionManager:
         cooldown: float = 0,
         priority: int = 0,
         pre_action: Optional[Callable[[], bool]] = None,
-        post_action: Optional[Callable[[], bool]] = None
+        post_action: Optional[Callable[[], bool]] = None,
+        *,
+        enforce_guard: bool = True,
+        clamp_to_search_roi: bool = True
     ) -> bool:
         """
         Register a click action at a coordinate
@@ -505,7 +523,11 @@ class ActionManager:
         Returns:
             True if action was registered, False otherwise
         """
-        action = ClickAction(name, coordinate.x, coordinate.y, button, clicks, cooldown, priority, pre_action, post_action)
+        action = ClickAction(
+            name, coordinate.x, coordinate.y, button, clicks, cooldown, priority, pre_action, post_action,
+            enforce_guard=enforce_guard,
+            clamp_to_search_roi=clamp_to_search_roi
+        )
         return self.register_action(action)
     
     def unregister_action(self, name: str) -> bool:
@@ -683,4 +705,9 @@ class ActionManager:
         Returns:
             Dictionary with action statistics for all actions
         """
-        return {name: self.get_action_stats(name) for name in self.actions}
+        result: Dict[str, Dict[str, Any]] = {}
+        for name in self.actions:
+            stats = self.get_action_stats(name)
+            if stats is not None:
+                result[name] = stats
+        return result

@@ -132,6 +132,56 @@ class ColorSpecEditor(QWidget):
         
         # Update UI with current values
         self.update_ui_from_color_spec()
+        # Optional: add a small test button for tile color if this editor is for tile_color
+        if self.color_key == 'tile_color':
+            try:
+                from PyQt5.QtWidgets import QPushButton
+                test_btn = QPushButton("Test Tile Color")
+                test_btn.setToolTip("Capture search ROI, apply tile color mask, log stats, save snapshot")
+                test_btn.clicked.connect(self._on_test_tile_color)
+                lay = self.layout()
+                if lay is not None:
+                    lay.addWidget(test_btn)
+            except Exception:
+                pass
+
+    def set_color_spec(self, color_spec_dict_or_obj):
+        """Set the current ColorSpec from a dict or ColorSpec instance.
+
+        Accepts either a dict with keys matching ColorSpec fields (rgb, tol_rgb, use_hsv, tol_h, tol_s, tol_v)
+        or an existing ColorSpec object. Updates internal state, persists to config, and refreshes the UI.
+        """
+        try:
+            from rspsbot.core.config import ColorSpec as _ColorSpec
+            if isinstance(color_spec_dict_or_obj, _ColorSpec):
+                self.color_spec = color_spec_dict_or_obj
+            elif isinstance(color_spec_dict_or_obj, dict):
+                # Normalize rgb tuple (can arrive as list)
+                rgb = color_spec_dict_or_obj.get('rgb', (255, 0, 0))
+                if isinstance(rgb, list):
+                    rgb = tuple(rgb)
+                self.color_spec = _ColorSpec(
+                    rgb=rgb,
+                    tol_rgb=color_spec_dict_or_obj.get('tol_rgb', self.color_spec.tol_rgb),
+                    use_hsv=color_spec_dict_or_obj.get('use_hsv', self.color_spec.use_hsv),
+                    tol_h=color_spec_dict_or_obj.get('tol_h', self.color_spec.tol_h),
+                    tol_s=color_spec_dict_or_obj.get('tol_s', self.color_spec.tol_s),
+                    tol_v=color_spec_dict_or_obj.get('tol_v', self.color_spec.tol_v)
+                )
+            else:
+                raise TypeError(f"Unsupported color spec type: {type(color_spec_dict_or_obj)}")
+
+            # Persist to config
+            self.config_manager.set_color_spec(self.color_key, self.color_spec)
+            # Refresh UI
+            self.update_ui_from_color_spec()
+        except Exception as e:
+            logger = logging.getLogger('rspsbot.gui.panels.detection_panel')
+            logger.error(f"Failed to set color spec: {e}")
+    
+    def get_color_spec(self):
+        """Return current ColorSpec (for other panels requiring direct access)."""
+        return self.color_spec
     
     def init_ui(self):
         """Initialize the UI components"""
@@ -162,7 +212,7 @@ class ColorSpecEditor(QWidget):
         rgb_layout.addWidget(QLabel("RGB Tolerance:"))
         
         # Slider + spin pair for tolerance
-        self.rgb_tol_slider = QSlider(Qt.Horizontal)
+        self.rgb_tol_slider = QSlider(Qt.Horizontal)  # type: ignore[attr-defined, arg-type]
         self.rgb_tol_slider.setRange(0, 100)
         self.rgb_tol_slider.setValue(self.color_spec.tol_rgb)
         self.rgb_tol_slider.valueChanged.connect(self.on_rgb_tol_changed)
@@ -189,7 +239,7 @@ class ColorSpecEditor(QWidget):
         
         # HSV tolerances
         hsv_layout.addWidget(QLabel("Hue Tolerance:"), 1, 0)
-        self.h_tol_slider = QSlider(Qt.Horizontal)
+        self.h_tol_slider = QSlider(Qt.Horizontal)  # type: ignore[attr-defined, arg-type]
         self.h_tol_slider.setRange(0, 30)
         self.h_tol_slider.setValue(self.color_spec.tol_h)
         self.h_tol_slider.valueChanged.connect(self.on_h_tol_changed)
@@ -202,7 +252,7 @@ class ColorSpecEditor(QWidget):
         hsv_layout.addWidget(self.h_tol_spin, 1, 2)
         
         hsv_layout.addWidget(QLabel("Saturation Tolerance:"), 2, 0)
-        self.s_tol_slider = QSlider(Qt.Horizontal)
+        self.s_tol_slider = QSlider(Qt.Horizontal)  # type: ignore[attr-defined, arg-type]
         self.s_tol_slider.setRange(0, 100)
         self.s_tol_slider.setValue(self.color_spec.tol_s)
         self.s_tol_slider.valueChanged.connect(self.on_s_tol_changed)
@@ -215,7 +265,7 @@ class ColorSpecEditor(QWidget):
         hsv_layout.addWidget(self.s_tol_spin, 2, 2)
         
         hsv_layout.addWidget(QLabel("Value Tolerance:"), 3, 0)
-        self.v_tol_slider = QSlider(Qt.Horizontal)
+        self.v_tol_slider = QSlider(Qt.Horizontal)  # type: ignore[attr-defined, arg-type]
         self.v_tol_slider.setRange(0, 100)
         self.v_tol_slider.setValue(self.color_spec.tol_v)
         self.v_tol_slider.valueChanged.connect(self.on_v_tol_changed)
@@ -341,6 +391,70 @@ class ColorSpecEditor(QWidget):
         if dialog.exec_() == QDialog.Accepted and dialog.selected_color:
             self.color_button.set_color(dialog.selected_color)
             self.update_color_spec()
+
+    def _on_test_tile_color(self):
+        """Diagnostic: run a one-shot mask build over the current search ROI to see pixel stats.
+        Saves both frame & mask under outputs/tiles/ if possible."""
+        try:
+            from rspsbot.core.detection.capture import CaptureService
+            from rspsbot.core.detection.color_detector import build_mask
+            # Acquire capture service (reuse singleton / controller)
+            cap = getattr(getattr(self.parent(), 'bot_controller', None), 'capture_service', None)
+            if cap is None:
+                cap = CaptureService()
+            # Get search ROI from config
+            search_roi = self.config_manager.get_roi('search_roi')
+            if not search_roi:
+                logger.warning("Search ROI not set; cannot test tile color")
+                return
+            frame = cap.capture_region(search_roi)
+            spec = self.config_manager.get_color_spec('tile_color')
+            if not spec:
+                logger.warning("tile_color spec not configured")
+                return
+            step = int(self.config_manager.get('search_step', 2))
+            precise = bool(self.config_manager.get('use_precise_mode', True))
+            min_area = int(self.config_manager.get('tile_min_area', 30))
+            mask, contours = build_mask(frame, spec, step=step, precise=precise, min_area=min_area)
+            import numpy as np, os, time as _t, cv2
+            nonzero = int(np.count_nonzero(mask))
+            largest_area = 0.0
+            if contours:
+                try:
+                    largest_area = max(cv2.contourArea(c) for c in contours)
+                except Exception:
+                    pass
+            detected_tiles = len(contours) if contours else 0
+            outdir = os.path.join(str(self.config_manager.get('debug_output_dir', 'outputs')), 'tiles')
+            os.makedirs(outdir, exist_ok=True)
+            ts = _t.strftime('%Y%m%d_%H%M%S')
+            frame_path = os.path.join(outdir, f'tiletest_{ts}.png')
+            mask_path = os.path.join(outdir, f'tiletest_{ts}_mask.png')
+            try:
+                cv2.imwrite(frame_path, frame)
+                cv2.imwrite(mask_path, mask)
+            except Exception as e:
+                logger.error(f"Failed saving tile test snapshots: {e}")
+            logger.info(
+                f"TileColorTest roi=({search_roi.left},{search_roi.top},{search_roi.width}x{search_roi.height}) step={step} precise={precise} min_area={min_area} mask_nonzero={nonzero} contours={detected_tiles} largest_area={largest_area:.1f} saved={frame_path}"
+            )
+            # Store last test summary (optional overlay/HUD usage)
+            try:
+                self.config_manager.set('tile_last_test', {
+                    'roi': search_roi.to_dict(),
+                    'mask_nonzero': nonzero,
+                    'contours': detected_tiles,
+                    'largest_area': float(largest_area),
+                    'step': step,
+                    'precise': precise,
+                    'timestamp': ts,
+                    'frame_path': frame_path,
+                    'mask_path': mask_path,
+                })
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Error during tile color test: {e}")
 
 class MonsterColorDialog(QDialog):
     """
@@ -500,12 +614,32 @@ class MonsterColorsEditor(QWidget):
         self.colors_table = QTableWidget()
         self.colors_table.setColumnCount(6)
         self.colors_table.setHorizontalHeaderLabels(["Color", "RGB", "RGB Tol", "HSV", "H Tol", "S/V Tol"])
-        self.colors_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.colors_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.colors_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.colors_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.colors_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.colors_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        # Header tooltips for clarity
+        try:
+            for idx, tip in enumerate([
+                "Preview",
+                "Base RGB value",
+                "RGB tolerance (used)",
+                "HSV enabled (ignored by unified detection)",
+                "Hue tolerance (ignored by unified detection)",
+                "Sat/Value tolerance (ignored by unified detection)",
+            ]):
+                item = self.colors_table.horizontalHeaderItem(idx)
+                if item:
+                    item.setToolTip(tip)
+        except Exception:
+            pass
+        header = self.colors_table.horizontalHeader()
+        try:
+            if header is not None:
+                header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(1, QHeaderView.Stretch)
+                header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        except Exception:
+            pass
         self.colors_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.colors_table.setSelectionMode(QTableWidget.SingleSelection)
         self.colors_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -541,6 +675,17 @@ class MonsterColorsEditor(QWidget):
         # If rows exist and none selected yet, select the first row for convenience
         if self.colors_table.rowCount() > 0 and self.colors_table.currentRow() < 0:
             self.colors_table.selectRow(0)
+
+    def hide_hsv_columns(self, hidden: bool = True):
+        """Hide or show HSV-related columns which are ignored by unified detection.
+        Columns: 3 (HSV), 4 (H Tol), 5 (S/V Tol)
+        """
+        try:
+            self.colors_table.setColumnHidden(3, hidden)
+            self.colors_table.setColumnHidden(4, hidden)
+            self.colors_table.setColumnHidden(5, hidden)
+        except Exception:
+            pass
     
     def load_monster_colors(self):
         """Load monster colors from config"""
@@ -748,7 +893,7 @@ class DetectionPanel(QWidget):
     Panel for detection settings
     """
     
-    def __init__(self, config_manager, bot_controller):
+    def __init__(self, config_manager, bot_controller, *, hide_monster_colors: bool = False):
         """
         Initialize the detection panel
         
@@ -759,6 +904,8 @@ class DetectionPanel(QWidget):
         super().__init__()
         self.config_manager = config_manager
         self.bot_controller = bot_controller
+        # When True, we hide the Monster Colors editor (used by Slayer window). Default False for normal GUI.
+        self._hide_monster_colors = bool(hide_monster_colors)
         
         # Initialize UI
         self.init_ui()
@@ -925,20 +1072,22 @@ class DetectionPanel(QWidget):
         adv_layout.addWidget(QLabel("Min Saturation:"), 0, 0)
         self.mon_sat_spin = QSpinBox()
         self.mon_sat_spin.setRange(0, 255)
-        self.mon_sat_spin.setValue(self.config_manager.get('monster_sat_min', 40))
+        # Use Multi Monster gating when available (falls back to legacy)
+        self.mon_sat_spin.setValue(self.config_manager.get('multi_monster_sat_min', self.config_manager.get('monster_sat_min', 40)))
         self.mon_sat_spin.valueChanged.connect(self.on_mon_sat_changed)
         adv_layout.addWidget(self.mon_sat_spin, 0, 1)
 
         adv_layout.addWidget(QLabel("Min Value:"), 0, 2)
         self.mon_val_spin = QSpinBox()
         self.mon_val_spin.setRange(0, 255)
-        self.mon_val_spin.setValue(self.config_manager.get('monster_val_min', 40))
+        self.mon_val_spin.setValue(self.config_manager.get('multi_monster_val_min', self.config_manager.get('monster_val_min', 40)))
         self.mon_val_spin.valueChanged.connect(self.on_mon_val_changed)
         adv_layout.addWidget(self.mon_val_spin, 0, 3)
 
         # Exclude tile color & dilate
         self.exclude_tile_checkbox = QCheckBox("Exclude tile color from monster mask")
-        self.exclude_tile_checkbox.setChecked(self.config_manager.get('monster_exclude_tile_color', True))
+        # Unified detection ignores this; keep UI in sync but disabled
+        self.exclude_tile_checkbox.setChecked(False)
         self.exclude_tile_checkbox.toggled.connect(self.on_exclude_tile_toggled)
         adv_layout.addWidget(self.exclude_tile_checkbox, 1, 0, 1, 3)
 
@@ -953,28 +1102,29 @@ class DetectionPanel(QWidget):
         adv_layout.addWidget(QLabel("Open iters:"), 2, 0)
         self.morph_open_spin = QSpinBox()
         self.morph_open_spin.setRange(0, 6)
-        self.morph_open_spin.setValue(self.config_manager.get('monster_morph_open_iters', 1))
+        self.morph_open_spin.setValue(self.config_manager.get('multi_monster_morph_open_iters', self.config_manager.get('monster_morph_open_iters', 1)))
         self.morph_open_spin.valueChanged.connect(self.on_morph_open_changed)
         adv_layout.addWidget(self.morph_open_spin, 2, 1)
 
         adv_layout.addWidget(QLabel("Close iters:"), 2, 2)
         self.morph_close_spin = QSpinBox()
         self.morph_close_spin.setRange(0, 6)
-        self.morph_close_spin.setValue(self.config_manager.get('monster_morph_close_iters', 2))
+        self.morph_close_spin.setValue(self.config_manager.get('multi_monster_morph_close_iters', self.config_manager.get('monster_morph_close_iters', 2)))
         self.morph_close_spin.valueChanged.connect(self.on_morph_close_changed)
         adv_layout.addWidget(self.morph_close_spin, 2, 3)
 
         # Lab assist
         self.lab_assist_checkbox = QCheckBox("Enable Lab assist")
         self.lab_assist_checkbox.setToolTip("Loosen detection by also accepting pixels close in Lab space (DeltaE).")
-        self.lab_assist_checkbox.setChecked(self.config_manager.get('monster_use_lab_assist', False))
+        # Always on under unified detection
+        self.lab_assist_checkbox.setChecked(True)
         self.lab_assist_checkbox.toggled.connect(self.on_lab_assist_toggled)
         adv_layout.addWidget(self.lab_assist_checkbox, 3, 0, 1, 3)
 
         adv_layout.addWidget(QLabel("Lab tolerance (ΔE76):"), 3, 3)
         self.lab_tol_spin = QSpinBox()
         self.lab_tol_spin.setRange(5, 80)
-        self.lab_tol_spin.setValue(self.config_manager.get('monster_lab_tolerance', 22))
+        self.lab_tol_spin.setValue(self.config_manager.get('multi_monster_lab_tolerance', self.config_manager.get('monster_lab_tolerance', 22)))
         self.lab_tol_spin.valueChanged.connect(self.on_lab_tol_changed)
         adv_layout.addWidget(self.lab_tol_spin, 3, 4)
 
@@ -1076,15 +1226,41 @@ class DetectionPanel(QWidget):
         colors_layout.addWidget(tile_color_group)
         
         # Monster colors group
-        monster_colors_group = QGroupBox("Monster Colors")
-        monster_colors_layout = QVBoxLayout(monster_colors_group)
-        
-        # Monster colors editor
-        self.monster_colors_editor = MonsterColorsEditor(self.config_manager)
-        monster_colors_layout.addWidget(self.monster_colors_editor)
-        
-        # Add monster colors group to colors layout
-        colors_layout.addWidget(monster_colors_group)
+        if not self._hide_monster_colors:
+            monster_colors_group = QGroupBox("Monster Colors")
+            monster_colors_layout = QVBoxLayout(monster_colors_group)
+            # MM-aware info banner retained for clarity
+            self.mon_colors_banner = QLabel()
+            self.mon_colors_banner.setWordWrap(True)
+            self.mon_colors_banner.setStyleSheet(
+                "padding:6px; border-radius:4px; background:#fff8e1; color:#5d4037; border:1px solid #f0c36d;"
+            )
+            self._update_mon_colors_banner()
+            monster_colors_layout.addWidget(self.mon_colors_banner)
+
+            # Monster colors editor
+            self.monster_colors_editor = MonsterColorsEditor(self.config_manager)
+            try:
+                # Hide HSV columns if unified detection ignores them
+                self.monster_colors_editor.hide_hsv_columns(True)
+            except Exception:
+                pass
+            monster_colors_layout.addWidget(self.monster_colors_editor)
+            colors_layout.addWidget(monster_colors_group)
+        else:
+            # Info-only group for Slayer window
+            monster_colors_group = QGroupBox("Monster Colors (Slayer-controlled)")
+            monster_colors_layout = QVBoxLayout(monster_colors_group)
+            info = QLabel(
+                "In Slayer Mode, monster colors come from the Slayer panel.\n"
+                "This Detection panel hides the normal Monster Colors list."
+            )
+            info.setWordWrap(True)
+            info.setStyleSheet(
+                "padding:8px; border-radius:4px; background:#e3f2fd; color:#0d47a1; border:1px solid #90caf9;"
+            )
+            monster_colors_layout.addWidget(info)
+            colors_layout.addWidget(monster_colors_group)
         
         # Add stretch to push everything to the top
         colors_layout.addStretch()
@@ -1134,6 +1310,12 @@ class DetectionPanel(QWidget):
         
         # Add stretch to push everything to the top
         roi_layout.addStretch()
+
+        # Apply UI overrides/disablement based on unified detection + MM presence
+        try:
+            self._apply_detection_ui_overrides()
+        except Exception:
+            pass
     
     def on_scan_interval_changed(self, value):
         """Handle scan interval change"""
@@ -1144,6 +1326,7 @@ class DetectionPanel(QWidget):
         """Handle search step change"""
         logger.debug(f"Search step set to {value}")
         self.config_manager.set('search_step', value)
+        # Note: Monster scan step is not used (step=1 enforced in unified detection)
     
     def on_detect_tiles_toggled(self, checked):
         """Handle detect tiles toggle"""
@@ -1177,7 +1360,7 @@ class DetectionPanel(QWidget):
     
     def on_monster_scan_step_changed(self, value):
         """Handle monster scan step change"""
-        logger.debug(f"Monster scan step set to {value}")
+        logger.debug(f"Monster scan step set to {value} (ignored by unified detection; step=1 is used)")
         self.config_manager.set('monster_scan_step', value)
     
     def on_monster_fallback_toggled(self, checked):
@@ -1186,36 +1369,126 @@ class DetectionPanel(QWidget):
         self.config_manager.set('enable_monster_full_fallback', checked)
 
     def on_mon_sat_changed(self, value: int):
-        logger.debug(f"Monster min saturation set to {value}")
+        logger.debug(f"Monster min saturation set to {value} (MM unified)")
+        self.config_manager.set('multi_monster_sat_min', int(value))
         self.config_manager.set('monster_sat_min', int(value))
 
     def on_mon_val_changed(self, value: int):
-        logger.debug(f"Monster min value set to {value}")
+        logger.debug(f"Monster min value set to {value} (MM unified)")
+        self.config_manager.set('multi_monster_val_min', int(value))
         self.config_manager.set('monster_val_min', int(value))
 
     def on_exclude_tile_toggled(self, checked: bool):
-        logger.debug(f"Exclude tile color from monster mask: {'on' if checked else 'off'}")
-        self.config_manager.set('monster_exclude_tile_color', bool(checked))
+        logger.debug("Exclude tile color from monster mask is ignored (unified detection)")
+        self.config_manager.set('monster_exclude_tile_color', False)
 
     def on_tile_dilate_changed(self, value: int):
-        logger.debug(f"Tile exclude dilate iters set to {value}")
-        self.config_manager.set('monster_exclude_tile_dilate', int(value))
+        logger.debug("Tile exclude dilate iters ignored (unified detection)")
+        self.config_manager.set('monster_exclude_tile_dilate', 0)
 
     def on_morph_open_changed(self, value: int):
-        logger.debug(f"Monster morph open iters set to {value}")
+        logger.debug(f"Monster morph open iters set to {value} (MM unified)")
+        self.config_manager.set('multi_monster_morph_open_iters', int(value))
         self.config_manager.set('monster_morph_open_iters', int(value))
 
     def on_morph_close_changed(self, value: int):
-        logger.debug(f"Monster morph close iters set to {value}")
+        logger.debug(f"Monster morph close iters set to {value} (MM unified)")
+        self.config_manager.set('multi_monster_morph_close_iters', int(value))
         self.config_manager.set('monster_morph_close_iters', int(value))
 
     def on_lab_assist_toggled(self, checked: bool):
-        logger.debug(f"Monster Lab assist {'enabled' if checked else 'disabled'}")
-        self.config_manager.set('monster_use_lab_assist', bool(checked))
+        logger.debug("Monster Lab assist is always enabled in unified detection")
+        self.config_manager.set('monster_use_lab_assist', True)
 
     def on_lab_tol_changed(self, value: int):
-        logger.debug(f"Monster Lab tolerance set to {value}")
+        logger.debug(f"Monster Lab tolerance set to {value} (MM unified)")
+        self.config_manager.set('multi_monster_lab_tolerance', int(value))
         self.config_manager.set('monster_lab_tolerance', int(value))
+
+    # -------------------- UI helpers --------------------
+    def _has_mm_styles(self) -> bool:
+        """Return True if Multi Monster styles/colors are present in config."""
+        try:
+            # Either explicit multi_monster_configs (list with entries), or any of the per-style colors
+            cfgs = self.config_manager.get('multi_monster_configs', []) or []
+            if isinstance(cfgs, list) and len(cfgs) > 0:
+                return True
+            # Check per-style ColorSpecs
+            for key in (
+                'multi_monster_monster_melee_color',
+                'multi_monster_monster_ranged_color',
+                'multi_monster_monster_magic_color',
+            ):
+                if self.config_manager.get_color_spec(key):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _update_mon_colors_banner(self):
+        """Update the Monster Colors banner text/visibility depending on MM styles presence."""
+        try:
+            has_styles = self._has_mm_styles()
+        except Exception:
+            has_styles = False
+        if has_styles:
+            txt = (
+                "Multi Monster monster colors are configured and take precedence when MM mode is enabled. "
+                "Normal/1T1K use the same color rules when MM is off."
+            )
+        else:
+            txt = (
+                "No Multi Monster styles detected. Normal mode will match monsters using the list below. "
+                "HSV columns may be hidden if not used by detection."
+            )
+        try:
+            if hasattr(self, 'mon_colors_banner'):
+                self.mon_colors_banner.setText(txt)
+                self.mon_colors_banner.setVisible(True)
+        except Exception:
+            pass
+
+    def _apply_detection_ui_overrides(self):
+        """Disable/hide controls that are overridden by unified detection and add clarifying tooltips."""
+        # Monster scan step is enforced to step=1 internally
+        try:
+            self.monster_scan_step_spin.setEnabled(False)
+            self.monster_scan_step_spin.setToolTip(
+                "Ignored: unified detection always scans monsters with step=1 for accuracy."
+            )
+        except Exception:
+            pass
+        # Exclude tile color is not applied in unified detection
+        try:
+            self.exclude_tile_checkbox.setEnabled(False)
+            self.exclude_tile_checkbox.setToolTip(
+                "Ignored by unified detection. Monster masks no longer exclude tile color."
+            )
+        except Exception:
+            pass
+        # Tile dilate iters also not used when exclusion is off
+        try:
+            self.tile_dilate_spin.setEnabled(False)
+            self.tile_dilate_spin.setToolTip(
+                "Ignored with unified detection (tile exclusion disabled)."
+            )
+        except Exception:
+            pass
+        # Lab assist is always on for unified detection; tolerance sourced from Multi Monster precision when set
+        try:
+            self.lab_assist_checkbox.setEnabled(False)
+            self.lab_assist_checkbox.setToolTip(
+                "Always on in unified detection. Configure precision in Multi Monster panel if needed."
+            )
+        except Exception:
+            pass
+        # Clarify precise mode scope
+        try:
+            self.precise_mode_checkbox.setToolTip(
+                "Precise Mode applies to tile detection. Monster detection uses its own precise pipeline."
+            )
+        except Exception:
+            pass
 
     def on_tile_persist_changed(self, value: int):
         logger.debug(f"Tile persistence set to {value} ms")

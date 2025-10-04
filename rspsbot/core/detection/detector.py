@@ -528,6 +528,7 @@ class ROIManager:
         """
         self.config_manager = config_manager
         self.capture_service = capture_service
+        self._last_logged_roi = None  # track last ROI dict for change logging
     
     def get_active_roi(self) -> Dict[str, int]:
         """
@@ -536,29 +537,92 @@ class ROIManager:
         Returns:
             Dictionary with left, top, width, height
         """
-        # Try to get search ROI from config
-        search_roi = self.config_manager.get_roi('search_roi')
-        
-        if search_roi:
-            return search_roi.to_dict()
+        # Simplified: only respect search_roi; ignore tile_roi concept
+        try:
+            search_roi = self.config_manager.get_roi('search_roi')
+            if search_roi:
+                # Normalize ROI to absolute screen coordinates to keep base_roi consistent
+                roi_dict = search_roi.to_dict()
+                try:
+                    mode = str(roi_dict.get('mode', 'absolute')).lower()
+                    from .capture import CaptureService  # type: ignore
+                    bbox = CaptureService().get_window_bbox()
+                    l = int(roi_dict.get('left', 0)); t = int(roi_dict.get('top', 0))
+                    w = int(roi_dict.get('width', 0)); h = int(roi_dict.get('height', 0))
+                    if mode == 'percent':
+                        lf = float(roi_dict.get('left', 0.0)); tf = float(roi_dict.get('top', 0.0))
+                        wf = float(roi_dict.get('width', 0.0)); hf = float(roi_dict.get('height', 0.0))
+                        roi_dict = {
+                            'left': int(bbox['left'] + lf * bbox['width']),
+                            'top': int(bbox['top'] + tf * bbox['height']),
+                            'width': int(max(1, wf * bbox['width'])),
+                            'height': int(max(1, hf * bbox['height']))
+                        }
+                    elif mode == 'relative':
+                        roi_dict = {
+                            'left': int(bbox['left']) + l,
+                            'top': int(bbox['top']) + t,
+                            'width': w,
+                            'height': h
+                        }
+                    else:
+                        # Heuristic fallback if mode absent but values look client-relative
+                        within_abs_window = (
+                            l >= bbox['left'] - 2 and l <= bbox['left'] + bbox['width'] + 2 and
+                            t >= bbox['top'] - 2 and t <= bbox['top'] + bbox['height'] + 2
+                        )
+                        looks_relative = (l < bbox['width'] and t < bbox['height'] and w <= bbox['width'] and h <= bbox['height'])
+                        if not within_abs_window and looks_relative:
+                            roi_dict = {
+                                'left': int(bbox['left']) + l,
+                                'top': int(bbox['top']) + t,
+                                'width': w,
+                                'height': h
+                            }
+                except Exception:
+                    # If normalization fails, continue with raw dict
+                    pass
+                # Log once at startup and on change
+                try:
+                    if self._last_logged_roi != roi_dict:
+                        logger.info(
+                            f"Active Search ROI set to left={roi_dict['left']} top={roi_dict['top']} width={roi_dict['width']} height={roi_dict['height']}"
+                        )
+                        self._last_logged_roi = dict(roi_dict)
+                except Exception:
+                    pass
+                return roi_dict
+        except Exception:
+            pass
         
         # Fallback to focused window bbox via capture service
         try:
             bbox = self.capture_service.get_window_bbox()
-            return {
+            roi_dict = {
                 'left': int(bbox['left']),
                 'top': int(bbox['top']),
                 'width': int(bbox['width']),
                 'height': int(bbox['height'])
             }
+            if self._last_logged_roi != roi_dict:
+                logger.info(
+                    f"Active Search ROI not set; using window bbox left={roi_dict['left']} top={roi_dict['top']} width={roi_dict['width']} height={roi_dict['height']}"
+                )
+                self._last_logged_roi = dict(roi_dict)
+            return roi_dict
         except Exception:
-            # Last resort safe default
-            return {
+            roi_dict = {
                 'left': 0,
                 'top': 0,
                 'width': 800,
                 'height': 600
             }
+            if self._last_logged_roi != roi_dict:
+                logger.info(
+                    f"Active Search ROI fallback default used left={roi_dict['left']} top={roi_dict['top']} width={roi_dict['width']} height={roi_dict['height']}"
+                )
+                self._last_logged_roi = dict(roi_dict)
+            return roi_dict
     
     def get_detection_bbox(self, base_bbox: Dict[str, int]) -> Dict[str, int]:
         """
@@ -578,10 +642,10 @@ class ROIManager:
             ww, wh = base_bbox['width'], base_bbox['height']
             
             r = search_roi
-            l = max(wl, r.left)
-            t = max(wt, r.top)
-            rgt = min(wl + ww, r.left + r.width)
-            btm = min(wt + wh, r.top + r.height)
+            l = int(max(int(wl), int(r.left)))
+            t = int(max(int(wt), int(r.top)))
+            rgt = int(min(int(wl) + int(ww), int(r.left) + int(r.width)))
+            btm = int(min(int(wt) + int(wh), int(r.top) + int(r.height)))
             
             if rgt > l and btm > t:
                 return {
@@ -606,6 +670,7 @@ class TileDetector:
             config_manager: Configuration manager
         """
         self.config_manager = config_manager
+        self._empty_streak = 0  # consecutive zero-detection cycles
     
     def detect_tiles(self, frame: np.ndarray, roi: Dict[str, int]) -> List[Tuple[int, int]]:
         """
@@ -634,7 +699,7 @@ class TileDetector:
         
         try:
             # Build mask and find contours
-            _, contours = build_mask(
+            mask, contours = build_mask(
                 frame,
                 tile_color,
                 search_step,
@@ -647,10 +712,11 @@ class TileDetector:
             
             if points:
                 logger.debug(f"Detected {len(points)} tiles (step={search_step}, precise={use_precise})")
+                self._empty_streak = 0
             else:
                 # Try a quick precise fallback at step=1 if nothing found
                 if search_step > 1:
-                    _, cnt2 = build_mask(
+                    mask2, cnt2 = build_mask(
                         frame,
                         tile_color,
                         1,
@@ -660,8 +726,26 @@ class TileDetector:
                     points2 = contours_to_screen_points(cnt2, roi, 1)
                     if points2:
                         logger.debug("Fallback tile detection hit (step=1 precise)")
+                        self._empty_streak = 0
                         return points2
-            
+                self._empty_streak += 1
+                if self._empty_streak in (3, 10, 25):
+                    try:
+                        nonzero = int(np.count_nonzero(mask))
+                        logger.warning(
+                            f"Tile detection empty streak={self._empty_streak}; mask_nonzero={nonzero}; step={search_step}; precise={use_precise}; area_min={tile_min_area}"
+                        )
+                        if bool(self.config_manager.get('debug_save_snapshots', False)):
+                            import os, time as _t
+                            outdir = str(self.config_manager.get('debug_output_dir', 'outputs'))
+                            os.makedirs(outdir, exist_ok=True)
+                            ts = int(_t.time())
+                            try:
+                                cv2.imwrite(os.path.join(outdir, f"tile_mask_{ts}.png"), mask)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
             return points
         
         except Exception as e:
@@ -735,6 +819,160 @@ class MonsterDetector:
             config_manager: Configuration manager
         """
         self.config_manager = config_manager
+        # Cache last-built specs timestamp to allow cheap refresh if GUI updates occur
+        self._mm_like_specs_cache: List[ColorSpec] = []
+        self._mm_like_specs_last_build: float = 0.0
+
+    # --- Shared helpers to mirror Multi Monster color logic ---
+    def _build_mm_like_monster_specs(self) -> List[ColorSpec]:
+        """
+    Build monster ColorSpec list using the same rules as Multi Monster mode:
+    - Prefer 'multi_monster_configs' entries with optional 'alternates'
+    - Fallback to legacy 'monster_colors' list
+        - Use HSV with tol_h=6, tol_s=45, tol_v=45 and tol_rgb >= 10
+        Returns a fresh list each call.
+        """
+        try:
+            import time as _time
+            # Rebuild at most every ~2s to pick up GUI changes without overhead
+            if (not self._mm_like_specs_cache) or (_time.time() - self._mm_like_specs_last_build > 2.0):
+                specs: List[ColorSpec] = []
+                # Prefer Multi Monster configs (with alternates), else fallback to legacy monster_colors
+                mm_cfgs = self.config_manager.get('multi_monster_configs', []) or []
+                if isinstance(mm_cfgs, list) and mm_cfgs:
+                    for cfg in mm_cfgs:
+                        try:
+                            col = cfg.get('color') if isinstance(cfg, dict) else None
+                            if not isinstance(col, dict):
+                                continue
+                            rgb_list = col.get('rgb')
+                            if not rgb_list or len(rgb_list) != 3:
+                                continue
+                            rgb = (int(rgb_list[0]), int(rgb_list[1]), int(rgb_list[2]))
+                            tol = int(col.get('tol_rgb', 15))
+                            specs.append(ColorSpec(
+                                rgb=rgb,
+                                tol_rgb=max(10, tol),
+                                use_hsv=True,
+                                tol_h=6, tol_s=45, tol_v=45
+                            ))
+                            # Alternates
+                            alts = cfg.get('alternates', []) or []
+                            if isinstance(alts, list):
+                                for alt in alts:
+                                    try:
+                                        if not isinstance(alt, dict):
+                                            continue
+                                        a_rgb = alt.get('rgb')
+                                        if not a_rgb or len(a_rgb) != 3:
+                                            continue
+                                        a = (int(a_rgb[0]), int(a_rgb[1]), int(a_rgb[2]))
+                                        a_tol = int(alt.get('tol_rgb', tol))
+                                        specs.append(ColorSpec(
+                                            rgb=a,
+                                            tol_rgb=max(10, a_tol),
+                                            use_hsv=True,
+                                            tol_h=6, tol_s=45, tol_v=45
+                                        ))
+                                    except Exception:
+                                        continue
+                        except Exception:
+                            continue
+                else:
+                    # Fallback to legacy monster_colors
+                    legacy = self.config_manager.get('monster_colors', []) or []
+                    if isinstance(legacy, list):
+                        for cdict in legacy:
+                            try:
+                                if not isinstance(cdict, dict):
+                                    continue
+                                rgb_list = cdict.get('rgb')
+                                if not rgb_list or len(rgb_list) != 3:
+                                    continue
+                                rgb = (int(rgb_list[0]), int(rgb_list[1]), int(rgb_list[2]))
+                                tol = int(cdict.get('tol_rgb', 15))
+                                specs.append(ColorSpec(
+                                    rgb=rgb,
+                                    tol_rgb=max(10, tol),
+                                    use_hsv=True,
+                                    tol_h=6, tol_s=45, tol_v=45
+                                ))
+                            except Exception:
+                                continue
+                self._mm_like_specs_cache = specs
+                self._mm_like_specs_last_build = _time.time()
+            return list(self._mm_like_specs_cache)
+        except Exception:
+            return []
+
+    # --- Normal (non-Multi Monster) helpers: use Detection Settings strictly ---
+    def _build_normal_monster_specs(self) -> List[ColorSpec]:
+        """
+        Build monster ColorSpec list from Detection Settings only (monster_colors).
+        Do NOT include multi-monster alternates or overrides.
+        """
+        specs: List[ColorSpec] = []
+        try:
+            # Use legacy detection colors from Detection panel
+            legacy = self.config_manager.get('monster_colors', []) or []
+            if isinstance(legacy, list):
+                for cdict in legacy:
+                    try:
+                        if not isinstance(cdict, dict):
+                            continue
+                        rgb_list = cdict.get('rgb')
+                        if not rgb_list or len(rgb_list) != 3:
+                            continue
+                        rgb = (int(rgb_list[0]), int(rgb_list[1]), int(rgb_list[2]))
+                        tol_rgb = int(cdict.get('tol_rgb', 15))
+                        use_hsv = bool(cdict.get('use_hsv', False))
+                        tol_h = int(cdict.get('tol_h', 6))
+                        tol_s = int(cdict.get('tol_s', 45))
+                        tol_v = int(cdict.get('tol_v', 45))
+                        specs.append(ColorSpec(
+                            rgb=rgb,
+                            tol_rgb=max(1, tol_rgb),
+                            use_hsv=use_hsv,
+                            tol_h=tol_h, tol_s=tol_s, tol_v=tol_v
+                        ))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return specs
+
+    def _normal_config(self) -> Dict[str, Any]:
+        """
+        Build the mask config dict using Detection Settings only.
+        """
+        return {
+            'monster_sat_min': self.config_manager.get('monster_sat_min', 50),
+            'monster_val_min': self.config_manager.get('monster_val_min', 50),
+            'monster_exclude_tile_color': bool(self.config_manager.get('monster_exclude_tile_color', True)),
+            'monster_exclude_tile_dilate': int(self.config_manager.get('monster_exclude_tile_dilate', 0)),
+            'monster_morph_open_iters': self.config_manager.get('monster_morph_open_iters', 1),
+            'monster_morph_close_iters': self.config_manager.get('monster_morph_close_iters', 2),
+            'monster_use_lab_assist': bool(self.config_manager.get('monster_use_lab_assist', False)),
+            'monster_lab_tolerance': self.config_manager.get('monster_lab_tolerance', 20),
+            'tile_color': None
+        }
+
+    def _mm_like_config(self) -> Dict[str, Any]:
+        """
+        Build the mask config dict mirroring Multi Monster defaults, with sensible fallbacks.
+        """
+        return {
+            'monster_sat_min': self.config_manager.get('multi_monster_sat_min', self.config_manager.get('monster_sat_min', 50)),
+            'monster_val_min': self.config_manager.get('multi_monster_val_min', self.config_manager.get('monster_val_min', 50)),
+            # In Multi Monster we do not exclude tile color from monster mask
+            'monster_exclude_tile_color': False,
+            'monster_exclude_tile_dilate': 0,
+            'monster_morph_open_iters': self.config_manager.get('multi_monster_morph_open_iters', self.config_manager.get('monster_morph_open_iters', 1)),
+            'monster_morph_close_iters': self.config_manager.get('multi_monster_morph_close_iters', self.config_manager.get('monster_morph_close_iters', 2)),
+            'monster_use_lab_assist': True,
+            'monster_lab_tolerance': self.config_manager.get('multi_monster_lab_tolerance', self.config_manager.get('monster_lab_tolerance', 20)),
+            'tile_color': None
+        }
     
     def detect_monsters_near_tile(
         self,
@@ -757,7 +995,7 @@ class MonsterDetector:
         if not self.config_manager.get('detect_monsters', True):
             return []
         
-        # Get monster detection parameters
+    # Get monster detection parameters (preserve ROI strategy but choose color/config by mode)
         base_radius = self.config_manager.get('around_tile_radius', 120)
         max_expansion = self.config_manager.get('roi_max_expansion', 3)
         expansion_factor = self.config_manager.get('roi_expansion_factor', 1.2)
@@ -776,24 +1014,13 @@ class MonsterDetector:
             if roi_bbox['width'] <= 0 or roi_bbox['height'] <= 0:
                 break
             
-            # Get monster colors
-            monster_colors = []
-            monster_colors_dicts = self.config_manager.get('monster_colors', [])
-            
-            for color_dict in monster_colors_dicts:
-                try:
-                    color = ColorSpec(
-                        rgb=tuple(color_dict['rgb']),
-                        tol_rgb=color_dict.get('tol_rgb', 8),
-                        use_hsv=color_dict.get('use_hsv', True),
-                        tol_h=color_dict.get('tol_h', 4),
-                        tol_s=color_dict.get('tol_s', 30),
-                        tol_v=color_dict.get('tol_v', 30)
-                    )
-                    monster_colors.append(color)
-                except Exception as e:
-                    logger.error(f"Error creating monster ColorSpec: {e}")
-            
+            # Choose color/spec behavior based on Multi Monster Mode toggle
+            mm_enabled = bool(self.config_manager.get('multi_monster_mode_enabled', False))
+            if mm_enabled:
+                monster_colors = self._build_mm_like_monster_specs()
+            else:
+                monster_colors = self._build_normal_monster_specs()
+
             if not monster_colors:
                 logger.warning("No valid monster colors configured")
                 return []
@@ -804,23 +1031,15 @@ class MonsterDetector:
                 roi_bbox['left'] - base_roi['left']:roi_bbox['left'] - base_roi['left'] + roi_bbox['width']
             ]
             
-            # Detection parameters
-            step = max(1, self.config_manager.get('monster_scan_step', 1))
-            use_precise = self.config_manager.get('use_precise_mode', True)
-            monster_min_area = self.config_manager.get('monster_min_area', 15)
-            
-            # Get additional config for advanced detection
-            config_dict = {
-                'monster_sat_min': self.config_manager.get('monster_sat_min', 50),
-                'monster_val_min': self.config_manager.get('monster_val_min', 50),
-                'monster_exclude_tile_color': self.config_manager.get('monster_exclude_tile_color', True),
-                'monster_exclude_tile_dilate': self.config_manager.get('monster_exclude_tile_dilate', 1),
-                'monster_morph_open_iters': self.config_manager.get('monster_morph_open_iters', 1),
-                'monster_morph_close_iters': self.config_manager.get('monster_morph_close_iters', 2),
-                'monster_use_lab_assist': self.config_manager.get('monster_use_lab_assist', True),  # Enable by default
-                'monster_lab_tolerance': self.config_manager.get('monster_lab_tolerance', 20),
-                'tile_color': self.config_manager.get('tile_color')
-            }
+            # Detection parameters: depend on mode
+            step = 1
+            use_precise = True
+            if mm_enabled:
+                monster_min_area = self.config_manager.get('multi_monster_monster_min_area', self.config_manager.get('monster_min_area', 15))
+                config_dict = self._mm_like_config()
+            else:
+                monster_min_area = self.config_manager.get('monster_min_area', 15)
+                config_dict = self._normal_config()
             
             try:
                 # Build mask and find contours
@@ -908,44 +1127,26 @@ class MonsterDetector:
         Returns:
             List of monster dictionaries with position and metadata
         """
-        # Get monster colors
-        monster_colors = []
-        monster_colors_dicts = self.config_manager.get('monster_colors', [])
-
-        for color_dict in monster_colors_dicts:
-            try:
-                color = ColorSpec(
-                    rgb=tuple(color_dict['rgb']),
-                    tol_rgb=color_dict.get('tol_rgb', 8),
-                    use_hsv=color_dict.get('use_hsv', True),
-                    tol_h=color_dict.get('tol_h', 4),
-                    tol_s=color_dict.get('tol_s', 30),
-                    tol_v=color_dict.get('tol_v', 30)
-                )
-                monster_colors.append(color)
-            except Exception as e:
-                logger.error(f"Error creating monster ColorSpec: {e}")
+        # Choose color/spec behavior based on Multi Monster Mode toggle
+        mm_enabled = bool(self.config_manager.get('multi_monster_mode_enabled', False))
+        if mm_enabled:
+            monster_colors = self._build_mm_like_monster_specs()
+        else:
+            monster_colors = self._build_normal_monster_specs()
 
         if not monster_colors:
             logger.warning("No valid monster colors configured")
             return []
 
-        # Detection parameters
-        step = max(1, self.config_manager.get('monster_scan_step', 1))
-        use_precise = self.config_manager.get('use_precise_mode', True)
-        monster_min_area = self.config_manager.get('monster_min_area', 15)
-
-        config_dict = {
-            'monster_sat_min': self.config_manager.get('monster_sat_min', 50),
-            'monster_val_min': self.config_manager.get('monster_val_min', 50),
-            'monster_exclude_tile_color': self.config_manager.get('monster_exclude_tile_color', True),
-            'monster_exclude_tile_dilate': self.config_manager.get('monster_exclude_tile_dilate', 1),
-            'monster_morph_open_iters': self.config_manager.get('monster_morph_open_iters', 1),
-            'monster_morph_close_iters': self.config_manager.get('monster_morph_close_iters', 2),
-            'monster_use_lab_assist': self.config_manager.get('monster_use_lab_assist', False),
-            'monster_lab_tolerance': self.config_manager.get('monster_lab_tolerance', 20),
-            'tile_color': self.config_manager.get('tile_color')
-        }
+        # Detection parameters: depend on mode
+        step = 1
+        use_precise = True
+        if mm_enabled:
+            monster_min_area = self.config_manager.get('multi_monster_monster_min_area', self.config_manager.get('monster_min_area', 15))
+            config_dict = self._mm_like_config()
+        else:
+            monster_min_area = self.config_manager.get('monster_min_area', 15)
+            config_dict = self._normal_config()
 
         try:
             # Build mask and find contours over full ROI frame
@@ -1195,14 +1396,25 @@ class CombatDetector:
             # Capture region
             frame = self.capture_service.capture_region(hp_roi)
             mask, contours = build_mask(frame, color_spec, step=1, precise=True, min_area=min_area)
-            
+
             # Quick pixel threshold test
             pixel_matches = int((mask > 0).sum())
-            if pixel_matches < min_pixels:
-                return False
-            
-            # If any contour passes area threshold we consider it detected
-            detected = len(contours) > 0
+            detected = False
+            if pixel_matches >= min_pixels and len(contours) > 0:
+                detected = True
+
+            # Optional verbose debug logging
+            if self.config_manager.get('hpbar_debug_logging', False):
+                largest_area = 0.0
+                if contours:
+                    try:
+                        import cv2
+                        largest_area = max(cv2.contourArea(c) for c in contours)
+                    except Exception:
+                        pass
+                logger.info(
+                    f"HPBarCycle roi=({hp_roi.left},{hp_roi.top},{hp_roi.width}x{hp_roi.height}) matches={pixel_matches} contours={len(contours)} min_px={min_pixels} min_area={min_area} largest_area={largest_area:.1f} detected={detected}"
+                )
             return detected
         except Exception as e:
             logger.error(f"Error detecting HP bar: {e}")

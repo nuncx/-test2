@@ -198,6 +198,19 @@ class BotController:
             logger.error(f"Failed to initialize detection engine: {e}")
             self.capture_service = None
             self.detection_engine = None
+
+        # Chat watcher (OCR-based)
+        self.chat_watcher = None
+        try:
+            if self.capture_service is not None and self.action_manager is not None:
+                from ..modules.chat_watcher import ChatWatcher
+                self.chat_watcher = ChatWatcher(self.config_manager, self.capture_service, self.action_manager, self.event_system)
+        except Exception as e:
+            logger.error(f"Failed to initialize ChatWatcher: {e}")
+
+        # Multi Monster Mode integration (lazy components)
+        self._multi_monster_detector = None
+        self._multi_monster_module = None
         
         # Simple runtime guards
         self._last_monster_click_time: float = 0.0
@@ -216,6 +229,11 @@ class BotController:
         # Global hotkey (F8) to toggle pause/resume
         self._hotkey_listener_thread = threading.Thread(target=self._install_hotkeys, daemon=True)
         self._hotkey_listener_thread.start()
+        # 1 Tele 1 Kill mode runtime state
+        self._one_tele_runtime = {
+            'hp_verify_deadline': 0.0,
+            'last_attack_time': 0.0,
+        }
     
     def _register_event_handlers(self):
         """Register handlers for events"""
@@ -286,6 +304,15 @@ class BotController:
             # Start main thread
             self._main_thread = threading.Thread(target=self._main_loop, daemon=True)
             self._main_thread.start()
+
+            # Start chat watcher thread if enabled
+            try:
+                if self.chat_watcher and bool(self.config_manager.get('chat_enabled', False)):
+                    if not self.chat_watcher.is_alive():
+                        self.chat_watcher = type(self.chat_watcher)(self.config_manager, self.capture_service, self.action_manager, self.event_system)
+                        self.chat_watcher.start()
+            except Exception as e:
+                logger.error(f"Failed to start ChatWatcher: {e}")
             
             # Publish event
             self.event_system.publish(EventType.STATE_CHANGED, {'state': self._state})
@@ -304,6 +331,13 @@ class BotController:
             
             # Update state
             self._state = BotState.STOPPED
+
+            # Stop chat watcher
+            try:
+                if self.chat_watcher and self.chat_watcher.is_alive():
+                    self.chat_watcher.stop()
+            except Exception:
+                pass
             
             # Reset statistics
             self._stats['start_time'] = None
@@ -497,6 +531,339 @@ class BotController:
                 
                 # Check if Instance-Only Mode is enabled
                 instance_only_mode = self.config_manager.get('instance_only_mode', False)
+                multi_monster_enabled = bool(self.config_manager.get('multi_monster_mode_enabled', False))
+                one_tele_enabled = bool(self.config_manager.get('one_tele_one_kill_enabled', False))
+
+                # 1 Tele 1 Kill override takes highest priority
+                if one_tele_enabled:
+                    try:
+                        base_roi = self.detection_engine.roi_manager.get_active_roi()
+                        if not base_roi:
+                            time.sleep(max(0.01, float(self.config_manager.get('scan_interval', 0.2))))
+                            continue
+                        # Use the standard detection cycle (SEARCH ROI -> TILE -> MONSTER by colors)
+                        result = self.detection_engine.detect_cycle()
+                        in_combat = bool(result.get('in_combat', False))
+                        hp_seen = bool(result.get('hp_seen', False))
+                        monsters = result.get('monsters', [])
+                        roi = result.get('roi', {})
+                        # Current timestamp for deadline checks
+                        now_ts = time.time()
+
+                        # If a post-combat teleport deadline is set and reached, perform teleport immediately (takes precedence)
+                        try:
+                            deadline = float(self._one_tele_runtime.get('hp_verify_deadline', 0.0))
+                        except Exception:
+                            deadline = 0.0
+                        if deadline > 0.0 and now_ts >= deadline:
+                            ok = False
+                            abs_x = abs_y = 0
+                            # Prefer ROI if enabled
+                            try:
+                                use_roi = bool(self.config_manager.get('one_tele_use_roi', False))
+                                roi = self.config_manager.get_roi('one_tele_one_kill_teleport_roi') if use_roi else None
+                            except Exception:
+                                roi = None
+                            if self.action_manager and self.action_manager.mouse_controller:
+                                try:
+                                    if roi is not None:
+                                        from ..detection.capture import CaptureService  # type: ignore
+                                        import random as _rand
+                                        bbox = CaptureService().get_window_bbox()
+                                        mode = str(getattr(roi, 'mode', 'absolute')).lower()
+                                        if mode == 'percent':
+                                            L = int(bbox['left'] + float(roi.left) * bbox['width'])
+                                            T = int(bbox['top'] + float(roi.top) * bbox['height'])
+                                            W = int(max(1, float(roi.width) * bbox['width']))
+                                            H = int(max(1, float(roi.height) * bbox['height']))
+                                        elif mode == 'relative':
+                                            L = int(bbox['left'] + int(roi.left))
+                                            T = int(bbox['top'] + int(roi.top))
+                                            W = int(roi.width)
+                                            H = int(roi.height)
+                                        else:
+                                            L = int(roi.left); T = int(roi.top); W = int(roi.width); H = int(roi.height)
+                                        abs_x = _rand.randint(L, L + max(0, W - 1))
+                                        abs_y = _rand.randint(T, T + max(0, H - 1))
+                                    else:
+                                        coord = self.config_manager.get_coordinate('one_tele_one_kill_teleport_xy')
+                                        if coord is not None:
+                                            abs_x, abs_y = int(coord.x), int(coord.y)
+                                            try:
+                                                from ..detection.capture import CaptureService  # type: ignore
+                                                bbox = CaptureService().get_window_bbox()
+                                                if 0 <= int(coord.x) <= int(bbox.get('width', 0)) and 0 <= int(coord.y) <= int(bbox.get('height', 0)):
+                                                    abs_x = int(bbox.get('left', 0)) + int(coord.x)
+                                                    abs_y = int(bbox.get('top', 0)) + int(coord.y)
+                                            except Exception:
+                                                pass
+                                    if abs_x or abs_y:
+                                        ok = self.action_manager.mouse_controller.move_and_click(abs_x, abs_y, enforce_guard=False, clamp_to_search_roi=False)
+                                except Exception as e:
+                                    logger.error(f"1T1K teleport click (deadline) failed: {e}")
+                            if ok:
+                                self.event_system.publish(EventType.TELEPORT_USED, {'location': '1T1K', 'coordinate': (abs_x, abs_y), 'emergency': False})
+                                logger.info(f"1T1K: Teleport clicked at ({abs_x}, {abs_y}) after HP timeout")
+                                # Optional post-teleport hotkey
+                                try:
+                                    if bool(self.config_manager.get('one_tele_post_hotkey_enabled', False)) and self.action_manager and self.action_manager.keyboard_controller:
+                                        hk = str(self.config_manager.get('one_tele_post_hotkey', '2'))
+                                        delay = float(self.config_manager.get('one_tele_post_hotkey_delay', 0.15))
+                                        time.sleep(max(0.0, delay))
+                                        if '+' in hk:
+                                            self.action_manager.keyboard_controller.press_hotkey(hk)
+                                        else:
+                                            self.action_manager.keyboard_controller.press_key(hk)
+                                        logger.info(f"1T1K: Post-teleport hotkey '{hk}' sent")
+                                except Exception as e:
+                                    logger.warning(f"1T1K: Failed to send post-teleport hotkey: {e}")
+                            else:
+                                logger.warning("1T1K: Teleport click failed or action manager unavailable")
+                            # Reset and settle
+                            self._one_tele_runtime['hp_verify_deadline'] = 0.0
+                            self._one_tele_runtime['was_in_combat'] = False
+                            self._one_tele_runtime['post_combat_waiting'] = False
+                            time.sleep(0.6)
+                            continue
+
+                        # If HP bar is seen, clear verification timer and idle (do not rely on in_combat alone)
+                        if hp_seen:
+                            # If we're in post-combat waiting state, do NOT clear the deadline; we're committed to teleport after timeout
+                            if not bool(self._one_tele_runtime.get('post_combat_waiting', False)):
+                                if float(self._one_tele_runtime.get('hp_verify_deadline', 0.0)) > 0.0:
+                                    logger.info("1T1K: HP bar seen -> clearing verify timer")
+                                self._one_tele_runtime['hp_verify_deadline'] = 0.0
+                                # Track that we are in combat; we'll arm post-combat on disappearance
+                                self._one_tele_runtime['was_in_combat'] = True
+                            time.sleep(max(0.01, float(self.config_manager.get('scan_interval', 0.2))))
+                            continue
+
+                        # now_ts already captured above for consistency
+                        was_in_combat = bool(self._one_tele_runtime.get('was_in_combat', False))
+                        # If combat just ended (HP bar disappeared), arm the verify timer instead of immediate teleport
+                        if was_in_combat and not hp_seen:
+                            try:
+                                tmo = float(self.config_manager.get('one_tele_one_kill_hp_timeout_s', 5.0))
+                            except Exception:
+                                tmo = 5.0
+                            deadline = float(self._one_tele_runtime.get('hp_verify_deadline', 0.0))
+                            if deadline <= 0.0:
+                                self._one_tele_runtime['hp_verify_deadline'] = time.time() + max(0.5, tmo)
+                                logger.info(f"1T1K: HP bar disappeared; arming post-combat teleport in {tmo:.1f}s")
+                            # Enter post-combat waiting state so timer won't be cleared by transient HP detections
+                            self._one_tele_runtime['post_combat_waiting'] = True
+                            # Do not teleport immediately; wait for deadline branch to handle it
+                            time.sleep(max(0.01, float(self.config_manager.get('scan_interval', 0.2))))
+                            continue
+
+                        deadline = float(self._one_tele_runtime.get('hp_verify_deadline', 0.0))
+                        if deadline > 0.0 and now_ts >= deadline:
+                            # Verification failed -> teleport (ROI if enabled)
+                            ok = False
+                            abs_x = abs_y = 0
+                            try:
+                                use_roi = bool(self.config_manager.get('one_tele_use_roi', False))
+                                roi = self.config_manager.get_roi('one_tele_one_kill_teleport_roi') if use_roi else None
+                            except Exception:
+                                roi = None
+                            if self.action_manager and self.action_manager.mouse_controller:
+                                try:
+                                    if roi is not None:
+                                        from ..detection.capture import CaptureService  # type: ignore
+                                        import random as _rand
+                                        bbox = CaptureService().get_window_bbox()
+                                        mode = str(getattr(roi, 'mode', 'absolute')).lower()
+                                        if mode == 'percent':
+                                            L = int(bbox['left'] + float(roi.left) * bbox['width'])
+                                            T = int(bbox['top'] + float(roi.top) * bbox['height'])
+                                            W = int(max(1, float(roi.width) * bbox['width']))
+                                            H = int(max(1, float(roi.height) * bbox['height']))
+                                        elif mode == 'relative':
+                                            L = int(bbox['left'] + int(roi.left))
+                                            T = int(bbox['top'] + int(roi.top))
+                                            W = int(roi.width)
+                                            H = int(roi.height)
+                                        else:
+                                            L = int(roi.left); T = int(roi.top); W = int(roi.width); H = int(roi.height)
+                                        abs_x = _rand.randint(L, L + max(0, W - 1))
+                                        abs_y = _rand.randint(T, T + max(0, H - 1))
+                                    else:
+                                        coord = self.config_manager.get_coordinate('one_tele_one_kill_teleport_xy')
+                                        if coord is None:
+                                            logger.warning("1T1K: Teleport target not set; cannot teleport. Disabling verify window.")
+                                            self._one_tele_runtime['hp_verify_deadline'] = 0.0
+                                        else:
+                                            abs_x, abs_y = int(coord.x), int(coord.y)
+                                            try:
+                                                from ..detection.capture import CaptureService  # type: ignore
+                                                bbox = CaptureService().get_window_bbox()
+                                                if 0 <= int(coord.x) <= int(bbox.get('width', 0)) and 0 <= int(coord.y) <= int(bbox.get('height', 0)):
+                                                    abs_x = int(bbox.get('left', 0)) + int(coord.x)
+                                                    abs_y = int(bbox.get('top', 0)) + int(coord.y)
+                                            except Exception:
+                                                pass
+                                    if abs_x or abs_y:
+                                        ok = self.action_manager.mouse_controller.move_and_click(abs_x, abs_y, enforce_guard=False, clamp_to_search_roi=False)
+                                except Exception as e:
+                                    logger.error(f"1T1K teleport click failed: {e}")
+                            if ok:
+                                self.event_system.publish(EventType.TELEPORT_USED, {'location': '1T1K', 'coordinate': (abs_x, abs_y), 'emergency': False})
+                                logger.info(f"1T1K: Teleport clicked at ({abs_x}, {abs_y}) after HP timeout")
+                                # Optional post-teleport hotkey
+                                try:
+                                    if bool(self.config_manager.get('one_tele_post_hotkey_enabled', False)) and self.action_manager and self.action_manager.keyboard_controller:
+                                        hk = str(self.config_manager.get('one_tele_post_hotkey', '2'))
+                                        delay = float(self.config_manager.get('one_tele_post_hotkey_delay', 0.15))
+                                        time.sleep(max(0.0, delay))
+                                        if '+' in hk:
+                                            self.action_manager.keyboard_controller.press_hotkey(hk)
+                                        else:
+                                            self.action_manager.keyboard_controller.press_key(hk)
+                                        logger.info(f"1T1K: Post-teleport hotkey '{hk}' sent")
+                                except Exception as e:
+                                    logger.warning(f"1T1K: Failed to send post-teleport hotkey: {e}")
+                            else:
+                                logger.warning("1T1K: Teleport click failed or action manager unavailable")
+                                # Reset timer regardless to avoid loops
+                                self._one_tele_runtime['hp_verify_deadline'] = 0.0
+                                self._one_tele_runtime['was_in_combat'] = False
+                                self._one_tele_runtime['post_combat_waiting'] = False
+                                # Small settle pause after teleport
+                                time.sleep(0.6)
+                                continue
+
+                        # Not in combat: if a deadline is armed, wait without clicking to avoid random clicks
+                        try:
+                            deadline = float(self._one_tele_runtime.get('hp_verify_deadline', 0.0))
+                        except Exception:
+                            deadline = 0.0
+                        if deadline > 0.0:
+                            # Waiting for post-combat teleport; do not click monsters
+                            time.sleep(max(0.01, float(self.config_manager.get('scan_interval', 0.2))))
+                            continue
+
+                        # No deadline active -> attempt attack if a monster is present
+                        if monsters:
+                            try:
+                                # Helper for squared distance
+                                def _dist2(p, q):
+                                    return (float(p[0]) - float(q[0]))**2 + (float(p[1]) - float(q[1]))**2
+
+                                # Compute ROI center (used only for fallback + logging)
+                                center_x = roi['left'] + roi['width'] // 2 if roi else 0
+                                center_y = roi['top'] + roi['height'] // 2 if roi else 0
+
+                                # Keep low-confidence stats for logging, but do NOT use them for selection
+                                lowconf_enabled = bool(self.config_manager.get('low_confidence_click_enabled', True))
+                                area_thr = float(self.config_manager.get('low_confidence_area_threshold', 220.0))
+                                min_count = int(self.config_manager.get('low_conf_min_count', 3))
+                                largest_area = 0.0
+                                for m in monsters:
+                                    try:
+                                        a = float(m.get('area', 0.0))
+                                        if a > largest_area:
+                                            largest_area = a
+                                    except Exception:
+                                        pass
+                                is_lowconf = lowconf_enabled and (len(monsters) < min_count or largest_area < area_thr)
+
+                                # 1T1K selection override: pick the monster closest to its tile center when available
+                                with_tile = [m for m in monsters if m.get('tile_center') is not None]
+                                target = None
+                                if with_tile:
+                                    try:
+                                        target = min(with_tile, key=lambda m: _dist2(m['position'], m['tile_center']))
+                                    except Exception:
+                                        target = None
+                                # Fallbacks when tile center is missing for all
+                                if target is None:
+                                    # previous heuristic fallback: nearest to ROI center (ignore sticky/area for simplicity)
+                                    try:
+                                        target = min(monsters, key=lambda m: _dist2(m['position'], (center_x, center_y)))
+                                    except Exception:
+                                        target = monsters[0]
+
+                                x, y = target['position']
+
+                                # Respect basic cooldown
+                                now_click = time.time()
+                                if (now_click - self._last_monster_click_time) >= float(self.config_manager.get('min_monster_click_cooldown_s', 0.8)):
+                                    if self.action_manager and self.action_manager.mouse_controller.move_and_click(x, y, button='left', clicks=1, enforce_guard=False):
+                                        self._last_monster_click_time = now_click
+                                        self._last_monster_click_pos = (x, y)
+                                        # Arm HP verification timer
+                                        try:
+                                            tmo = float(self.config_manager.get('one_tele_one_kill_hp_timeout_s', 5.0))
+                                        except Exception:
+                                            tmo = 5.0
+                                        self._one_tele_runtime['hp_verify_deadline'] = time.time() + max(0.5, tmo)
+                                        logger.info(f"1T1K: Clicked monster at ({x},{y}); waiting up to {tmo:.1f}s for HP bar before teleport (lowconf={is_lowconf}, area_max={largest_area:.1f}, strategy=nearest_tile)")
+                                        # Optional small sleep to allow target selection
+                                        time.sleep(self.config_manager.get('click_after_found_sleep', 0.3))
+                                    else:
+                                        logger.debug("1T1K: Monster click suppressed by cooldown or controller not ready")
+                            except Exception as e:
+                                logger.error(f"1T1K attack error: {e}")
+
+                        time.sleep(max(0.01, float(self.config_manager.get('scan_interval', 0.2))))
+                        continue
+                    except Exception as e:
+                        logger.error(f"1T1K mode cycle error: {e}")
+                        # if failure, fall through to other modes
+
+                # If Multi Monster Mode enabled, ensure module initialized and run its cycle instead of normal detection loop
+                if multi_monster_enabled:
+                    try:
+                        if self._multi_monster_detector is None and self.capture_service is not None:
+                            from ..detection.multi_monster_detector import MultiMonsterDetector
+                            self._multi_monster_detector = MultiMonsterDetector(self.config_manager, self.capture_service)
+                            logger.info("MultiMonsterDetector initialized")
+                        if self._multi_monster_module is None and self._multi_monster_detector is not None and self.action_manager is not None:
+                            from ..modules.multi_monster import MultiMonsterModule
+                            self._multi_monster_module = MultiMonsterModule(
+                                self.config_manager,
+                                self.action_manager.mouse_controller,
+                                self.action_manager.keyboard_controller,
+                                self._multi_monster_detector
+                            )
+                            logger.info("MultiMonsterModule initialized")
+                        # If module is still unavailable, fall back to normal detection
+                        if self._multi_monster_module is None:
+                            time.sleep(max(0.01, float(self.config_manager.get('scan_interval', 0.2))))
+                            continue
+                        # Refresh config each cycle (cheap) to catch panel changes
+                        self._multi_monster_module.update_config()
+                        # Acquire base ROI (search window / active ROI) similar to normal loop
+                        base_roi = self.detection_engine.roi_manager.get_active_roi() if self.detection_engine else None
+                        if base_roi and self.capture_service is not None and self._multi_monster_module is not None:
+                            frame_mm = self.capture_service.capture_region(base_roi)
+                            mm_result = self._multi_monster_module.process_cycle(frame_mm, base_roi)
+                            # Lightweight logging (INFO for visibility)
+                            if mm_result.get('action'):
+                                reason = mm_result.get('reason')
+                                if reason:
+                                    logger.info(
+                                        "MM: action=%s monsters=%s req=%s in_combat=%s reason=%s",
+                                        mm_result.get('action'),
+                                        mm_result.get('monsters'),
+                                        mm_result.get('required_style'),
+                                        mm_result.get('in_combat'),
+                                        reason
+                                    )
+                                else:
+                                    logger.info(
+                                        "MM: action=%s monsters=%s req=%s in_combat=%s", 
+                                        mm_result.get('action'),
+                                        mm_result.get('monsters'),
+                                        mm_result.get('required_style'),
+                                        mm_result.get('in_combat')
+                                    )
+                        # Sleep per scan interval when in multi mode
+                        time.sleep(max(0.01, float(self.config_manager.get('scan_interval', 0.2))))
+                        continue  # Skip normal detection path
+                    except Exception as e:
+                        logger.error(f"Multi Monster Mode cycle error: {e}")
+                        # Fall through to normal detection if failure
                 
                 cycle_start = time.time()
                 result = self.detection_engine.detect_cycle()
@@ -549,6 +916,8 @@ class BotController:
                         wait_s = min_s if max_s == min_s else (min_s + (max_s - min_s) * _rand.random())
                         self._combat_timers['post_combat_cooldown_until'] = now_ts2 + max(0.0, wait_s)
                         logger.info(f"Post-combat cooldown started for {wait_s:.1f}s")
+                        # Reset last click reference so min-distance gate doesn't suppress the first re-attack
+                        self._last_monster_click_pos = None
                     except Exception:
                         # Fallback: use min only
                         min_s = float(self.config_manager.get('post_combat_delay_min_s', 1.0))
@@ -558,7 +927,8 @@ class BotController:
                 
                 # If we recently attacked but HP bar isn't visible yet, and the feature is enabled,
                 # attempt a one-time weapon/style click retry (using detected style) before attacking again.
-                if (not in_combat) and (not hp_seen) and bool(self.config_manager.get('combat_style_enforce', False)):
+                # Legacy combat_style_enforce flow disabled; Multi Monster Mode owns weapon switching/decision
+                if False and (not in_combat) and (not hp_seen) and bool(self.config_manager.get('combat_style_enforce', False)):
                     now_chk = time.time()
                     # Verification window active
                     if 0.0 < self._post_attack_verify_deadline and now_chk <= self._post_attack_verify_deadline:
@@ -593,7 +963,7 @@ class BotController:
                 if (not in_combat) and monsters:
                     # Optional: enforce combat style before attacking using Weapon ROI
                     try:
-                        if bool(self.config_manager.get('combat_style_enforce', False)) and self.detection_engine is not None:
+                        if False and bool(self.config_manager.get('combat_style_enforce', False)) and self.detection_engine is not None:
                             # Simple cooldown to avoid spamming style clicks
                             if not hasattr(self, '_style_enforce_until'):
                                 self._style_enforce_until = 0.0  # type: ignore[attr-defined]
@@ -673,23 +1043,34 @@ class BotController:
                         # Respect min click distance and cooldown
                         now = time.time()
                         min_cd = float(self.config_manager.get('min_monster_click_cooldown_s', 0.8))
+                        min_dist_enabled = bool(self.config_manager.get('min_monster_click_distance_enabled', True))
                         min_dist = int(self.config_manager.get('min_monster_click_distance_px', 12))
                         far_enough = True
-                        if self._last_monster_click_pos is not None:
+                        if min_dist_enabled and self._last_monster_click_pos is not None:
                             dx = x - self._last_monster_click_pos[0]
                             dy = y - self._last_monster_click_pos[1]
                             far_enough = (dx*dx + dy*dy) ** 0.5 >= min_dist
 
                         if (now - self._last_monster_click_time) >= min_cd and far_enough:
                             if self.action_manager:
-                                if self.action_manager.mouse_controller.move_and_click(x, y, button='left', clicks=1):
+                                # For monster attacks, rely on our own Attack Grace timer and bypass the mouse anti-overclick guard
+                                # to avoid first-click suppression immediately after startup.
+                                if self.action_manager.mouse_controller.move_and_click(
+                                    x, y,
+                                    button='left',
+                                    clicks=1,
+                                    enforce_guard=False,  # state-managed attack grace handles pacing
+                                    clamp_to_search_roi=True
+                                ):
                                     self._last_monster_click_time = now
                                     self._last_monster_click_pos = (x, y)
                                     # After ATTACK, apply Attack Grace wait
                                     try:
-                                        grace_s = float(self.config_manager.get('attack_grace_s', self.config_manager.get('post_combat_delay_min_s', 1.0)))
+                                        # Attack grace: short pause after an attack before next attack attempt
+                                        # Do NOT couple this to post-combat cooldown; use a dedicated setting with a sane default
+                                        grace_s = float(self.config_manager.get('attack_grace_s', 0.6))
                                     except Exception:
-                                        grace_s = 1.0
+                                        grace_s = 0.6
                                     self._combat_timers['attack_grace_until'] = time.time() + max(0.0, grace_s)
                                     # Arm post-attack verification window (HP bar should appear within 5s)
                                     if bool(self.config_manager.get('combat_style_enforce', False)):
@@ -706,9 +1087,26 @@ class BotController:
                                     else:
                                         logger.info(f"Click monster at: ({x}, {y})")
                                     time.sleep(self.config_manager.get('click_after_found_sleep', 0.4))
+                                else:
+                                    logger.debug("Monster click suppressed by controller (possibly cooldown); will retry next cycle")
                         else:
-                            # Cooldown or too close; skip click
-                            pass
+                            # Cooldown or too close; emit detailed reason
+                            try:
+                                rem_cd = max(0.0, min_cd - (now - self._last_monster_click_time))
+                            except Exception:
+                                rem_cd = 0.0
+                            if min_dist_enabled and not far_enough:
+                                try:
+                                    dx = x - (self._last_monster_click_pos[0] if self._last_monster_click_pos else x)
+                                    dy = y - (self._last_monster_click_pos[1] if self._last_monster_click_pos else y)
+                                    dist = (dx*dx + dy*dy) ** 0.5
+                                except Exception:
+                                    dist = 0.0
+                                logger.info(f"Monster click skipped: min-distance gate (dist={dist:.1f}px < min={min_dist}px)")
+                            elif rem_cd > 0.0:
+                                logger.info(f"Monster click skipped: cooldown gate (remaining={rem_cd:.1f}s >= min={min_cd:.1f}s)")
+                            else:
+                                logger.info("Monster click skipped due to gating (unknown reason)")
                     except Exception as e:
                         logger.error(f"Error clicking monster: {e}")
                 
@@ -887,10 +1285,19 @@ class BotController:
             # Legacy Timer: initial click immediately when script starts
             if strategy == 'timer' and not bool(mgr.get('legacy_initial_clicked', False)) and self.action_manager:
                 potion = detector.get_aggro_potion_location() if detector is not None else None
-                if potion is not None:
-                    logger.info(f"Legacy timer: initial aggro click at ({potion.x}, {potion.y})")
-                    if self.action_manager.mouse_controller.move_and_click(potion.x, potion.y):
-                        self.event_system.publish(EventType.AGGRO_USED, {'position': (potion.x, potion.y)})
+                # Convert potion coordinate to absolute
+                potion_abs = None
+                try:
+                    if potion is not None:
+                        from ..detection.capture import CaptureService  # type: ignore
+                        bbox = CaptureService().get_window_bbox()
+                        potion_abs = (int(bbox['left']) + int(potion.x), int(bbox['top']) + int(potion.y))
+                except Exception:
+                    potion_abs = None
+                if potion is not None and potion_abs is not None:
+                    logger.info(f"Legacy timer: initial aggro click at ({potion_abs[0]}, {potion_abs[1]})")
+                    if self.action_manager.mouse_controller.move_and_click(potion_abs[0], potion_abs[1], enforce_guard=False, clamp_to_search_roi=False):
+                        self.event_system.publish(EventType.AGGRO_USED, {'position': (potion_abs[0], potion_abs[1])})
                         # Post-aggro wait
                         try:
                             wait_s = float(self.config_manager.get('instance_post_aggro_hp_wait', 8.0))
@@ -1088,10 +1495,19 @@ class BotController:
             # Timer/hybrid (timer due) click path – no cooldown gating
             if should_click_timer and self.action_manager:
                 potion = detector.get_aggro_potion_location() if detector is not None else None
-                if potion is not None:
-                    logger.info(f"Aggro timer due; clicking aggro potion at ({potion.x}, {potion.y})")
-                    if self.action_manager.mouse_controller.move_and_click(potion.x, potion.y):
-                        self.event_system.publish(EventType.AGGRO_USED, {'position': (potion.x, potion.y)})
+                # Convert potion coordinate to absolute
+                potion_abs = None
+                try:
+                    if potion is not None:
+                        from ..detection.capture import CaptureService  # type: ignore
+                        bbox = CaptureService().get_window_bbox()
+                        potion_abs = (int(bbox['left']) + int(potion.x), int(bbox['top']) + int(potion.y))
+                except Exception:
+                    potion_abs = None
+                if potion is not None and potion_abs is not None:
+                    logger.info(f"Aggro timer due; clicking aggro potion at ({potion_abs[0]}, {potion_abs[1]})")
+                    if self.action_manager.mouse_controller.move_and_click(potion_abs[0], potion_abs[1], enforce_guard=False, clamp_to_search_roi=False):
+                        self.event_system.publish(EventType.AGGRO_USED, {'position': (potion_abs[0], potion_abs[1])})
                         try:
                             wait_s = float(self.config_manager.get('instance_post_aggro_hp_wait', 8.0))
                         except Exception:
@@ -1158,10 +1574,18 @@ class BotController:
                     logger.info(f"Aggro bar missing but {phase_str} active: {remaining:.1f}s remaining before next click")
                 else:
                     potion = detector.get_aggro_potion_location() if detector is not None else None
-                    if potion is not None:
-                        logger.info(f"Aggro bar not present; clicking aggro potion at ({potion.x}, {potion.y})")
-                        if self.action_manager.mouse_controller.move_and_click(potion.x, potion.y):
-                            self.event_system.publish(EventType.AGGRO_USED, {'position': (potion.x, potion.y)})
+                    potion_abs = None
+                    try:
+                        if potion is not None:
+                            from ..detection.capture import CaptureService  # type: ignore
+                            bbox = CaptureService().get_window_bbox()
+                            potion_abs = (int(bbox['left']) + int(potion.x), int(bbox['top']) + int(potion.y))
+                    except Exception:
+                        potion_abs = None
+                    if potion is not None and potion_abs is not None:
+                        logger.info(f"Aggro bar not present; clicking aggro potion at ({potion_abs[0]}, {potion_abs[1]})")
+                        if self.action_manager.mouse_controller.move_and_click(potion_abs[0], potion_abs[1], enforce_guard=False, clamp_to_search_roi=False):
+                            self.event_system.publish(EventType.AGGRO_USED, {'position': (potion_abs[0], potion_abs[1])})
                             try:
                                 wait_s = float(self.config_manager.get('instance_post_aggro_hp_wait', 8.0))
                             except Exception:
@@ -1194,6 +1618,9 @@ class BotController:
                 logger.info("HP bar seen after aggro; combat confirmed. Ending post-aggro wait.")
                 mgr['post_aggro_active'] = False
                 mgr['post_aggro_wait_until'] = 0.0
+                # If we were in fallback verification mode, clear the flag and continue
+                if mgr.get('fallback_after_max_retries', False):
+                    mgr['fallback_after_max_retries'] = False
                 # Continue normal loop
             else:
                 now_wait = time.time()
@@ -1203,10 +1630,17 @@ class BotController:
                     logger.info(f"Waiting for HP after aggro: {remaining:.1f}s remaining")
                     return
                 else:
-                    # Timeout expired; end wait and continue
-                    logger.info("Post-aggro wait expired without HP bar; continuing.")
+                    # Timeout expired; end wait
                     mgr['post_aggro_active'] = False
                     mgr['post_aggro_wait_until'] = 0.0
+                    # If this was the fallback verification window, stop the bot
+                    if mgr.get('fallback_after_max_retries', False):
+                        logger.error("Fallback verification window expired without HP bar; stopping bot.")
+                        mgr['fallback_after_max_retries'] = False
+                        self.stop()
+                        return
+                    else:
+                        logger.info("Post-aggro wait expired without HP bar; continuing.")
 
         # Check post-teleport wait/retry flow first
         try:
@@ -1237,9 +1671,110 @@ class BotController:
             retries = int(mgr.get('post_teleport_retry_count', 0))
             max_retries = int(self.config_manager.get('instance_teleport_max_retries', 5))
             if retries >= max_retries:
-                logger.error(f"Instance restart failed after {retries} attempts. Stopping bot.")
-                self.stop()
-                return
+                # After max retries, perform one-time fallback: click aggro potion, start timers, and wait for HP verification
+                if not mgr.get('fallback_used', False):
+                    logger.warning(
+                        f"Instance restart failed after {retries} attempts. Invoking fallback: click aggro potion and verify HP."
+                    )
+                    # Acquire aggro potion location
+                    potion = None
+                    try:
+                        if self.detection_engine is not None and self.detection_engine.instance_only_detector is not None:
+                            potion = self.detection_engine.instance_only_detector.get_aggro_potion_location()
+                    except Exception:
+                        potion = None
+                    # Convert to absolute
+                    potion_abs = None
+                    try:
+                        if potion is not None:
+                            from ..detection.capture import CaptureService  # type: ignore
+                            bbox = CaptureService().get_window_bbox()
+                            potion_abs = (int(bbox['left']) + int(potion.x), int(bbox['top']) + int(potion.y))
+                    except Exception:
+                        potion_abs = None
+                    if potion is not None and potion_abs is not None and self.action_manager is not None:
+                        logger.info(f"Fallback: clicking aggro potion at ({potion_abs[0]}, {potion_abs[1]})")
+                        if self.action_manager.mouse_controller.move_and_click(
+                            potion_abs[0], potion_abs[1], enforce_guard=False, clamp_to_search_roi=False
+                        ):
+                            # Mark fallback in-progress and schedule verification window
+                            try:
+                                wait_s = float(self.config_manager.get('instance_post_aggro_hp_wait', 8.0))
+                            except Exception:
+                                wait_s = 8.0
+                            mgr['fallback_used'] = True
+                            mgr['fallback_after_max_retries'] = True
+                            # Engage post-aggro verification window
+                            mgr['post_aggro_active'] = True
+                            mgr['post_aggro_wait_until'] = time.time() + max(0.5, wait_s)
+                            mgr['last_aggro_click_time'] = time.time()
+                            # Reset/start aggro timer schedule: start delay phase then interval
+                            try:
+                                start_delay_s = float(self.config_manager.get('instance_aggro_start_delay_s', 5.0))
+                            except Exception:
+                                start_delay_s = 5.0
+                            if start_delay_s > 0.0:
+                                mgr['aggro_timer_phase'] = 'start_delay'
+                                mgr['next_aggro_time'] = time.time() + start_delay_s
+                                try:
+                                    self.config_manager.set('instance_aggro_timer_phase', 'start_delay')
+                                    self.config_manager.set('instance_next_aggro_time_epoch', float(mgr['next_aggro_time']))
+                                except Exception:
+                                    pass
+                                logger.info(f"Fallback: aggro timer start delay scheduled in {start_delay_s:.1f}s")
+                            else:
+                                try:
+                                    interval_min = float(self.config_manager.get('instance_aggro_interval_min', 15.0))
+                                except Exception:
+                                    interval_min = 15.0
+                                try:
+                                    jitter_on = bool(self.config_manager.get('instance_aggro_jitter_enabled', True))
+                                except Exception:
+                                    jitter_on = True
+                                try:
+                                    jitter_pct = float(self.config_manager.get('instance_aggro_jitter_percent', 10.0))
+                                except Exception:
+                                    jitter_pct = 10.0
+                                jitter_pct = max(0.0, min(50.0, jitter_pct))
+                                eff_interval_s = max(1.0, interval_min * 60.0)
+                                try:
+                                    import random as _rand
+                                    if jitter_on and jitter_pct > 0.0:
+                                        span = (jitter_pct / 100.0) * 2.0
+                                        factor = 1.0 + (span * (_rand.random() - 0.5))
+                                    else:
+                                        factor = 1.0
+                                    eff_interval_s *= factor
+                                except Exception:
+                                    pass
+                                mgr['aggro_timer_phase'] = 'interval'
+                                mgr['next_aggro_time'] = time.time() + eff_interval_s
+                                try:
+                                    self.config_manager.set('instance_aggro_timer_phase', 'interval')
+                                    self.config_manager.set('instance_next_aggro_time_epoch', float(mgr['next_aggro_time']))
+                                except Exception:
+                                    pass
+                                logger.info(f"Fallback: aggro timer next click scheduled in {eff_interval_s:.1f}s")
+                            logger.info(f"Fallback: waiting up to {wait_s:.1f}s for HP bar after aggro click.")
+                            # Leave retry flow and allow post-aggro wait handler to manage continuation
+                            mgr['post_teleport_active'] = False
+                            mgr['post_teleport_wait_until'] = 0.0
+                            return
+                        else:
+                            logger.error("Fallback: aggro potion click failed; stopping bot.")
+                            self.stop()
+                            return
+                    else:
+                        logger.error("Fallback: aggro potion coordinate not set; stopping bot.")
+                        self.stop()
+                        return
+                else:
+                    # Fallback already used once; stop to avoid looping
+                    logger.error(
+                        f"Instance restart failed after {retries} attempts and fallback already used; stopping bot."
+                    )
+                    self.stop()
+                    return
 
             # Attempt retry: click token -> wait -> click teleport
             detector = None
@@ -1250,15 +1785,26 @@ class BotController:
                 detector = None
             token_location = detector.get_instance_token_location() if detector is not None else None
             teleport_location = detector.get_instance_teleport_location() if detector is not None else None
+            # Convert window-relative coordinates to absolute using current bbox
+            try:
+                if token_location is not None and teleport_location is not None:
+                    from ..detection.capture import CaptureService  # type: ignore
+                    bbox = CaptureService().get_window_bbox()
+                    token_abs = (int(bbox['left']) + int(token_location.x), int(bbox['top']) + int(token_location.y))
+                    tele_abs = (int(bbox['left']) + int(teleport_location.x), int(bbox['top']) + int(teleport_location.y))
+                else:
+                    token_abs = None; tele_abs = None
+            except Exception:
+                token_abs = None; tele_abs = None
             token_delay = detector.get_instance_token_delay() if detector is not None else float(self.config_manager.get('instance_token_delay', 2.0))
 
-            if token_location and teleport_location and self.action_manager:
+            if token_abs and tele_abs and self.action_manager:
                 if now - mgr['last_teleport_time'] >= mgr['teleport_cooldown']:
                     logger.info(f"Retrying instance entry (attempt {retries+1}/{max_retries})")
                     # Bypass anti-overclick guard for deterministic instance entry clicks
-                    if self.action_manager.mouse_controller.move_and_click(token_location.x, token_location.y, enforce_guard=False):
+                    if self.action_manager.mouse_controller.move_and_click(token_abs[0], token_abs[1], enforce_guard=False, clamp_to_search_roi=False):
                         time.sleep(token_delay)
-                        if self.action_manager.mouse_controller.move_and_click(teleport_location.x, teleport_location.y, enforce_guard=False):
+                        if self.action_manager.mouse_controller.move_and_click(tele_abs[0], tele_abs[1], enforce_guard=False, clamp_to_search_roi=False):
                             mgr['last_teleport_time'] = now
                             mgr['post_teleport_retry_count'] = retries + 1
                             mgr['post_teleport_wait_until'] = time.time() + hp_wait_s
@@ -1313,9 +1859,20 @@ class BotController:
                 detector = None
             token_location = detector.get_instance_token_location() if detector is not None else None
             teleport_location = detector.get_instance_teleport_location() if detector is not None else None
+            # Convert window-relative coordinates to absolute using current bbox
+            try:
+                if token_location is not None and teleport_location is not None:
+                    from ..detection.capture import CaptureService  # type: ignore
+                    bbox = CaptureService().get_window_bbox()
+                    token_abs = (int(bbox['left']) + int(token_location.x), int(bbox['top']) + int(token_location.y))
+                    tele_abs = (int(bbox['left']) + int(teleport_location.x), int(bbox['top']) + int(teleport_location.y))
+                else:
+                    token_abs = None; tele_abs = None
+            except Exception:
+                token_abs = None; tele_abs = None
             token_delay = detector.get_instance_token_delay() if detector is not None else float(self.config_manager.get('instance_token_delay', 2.0))
             
-            if token_location and teleport_location and self.action_manager:
+            if token_abs and tele_abs and self.action_manager:
                 # Check cooldown
                 if now - mgr['last_teleport_time'] >= mgr['teleport_cooldown']:
                     logger.info(
@@ -1323,19 +1880,19 @@ class BotController:
                     )
                     
                     # Click instance token
-                    logger.info(f"Clicking instance token at ({token_location.x}, {token_location.y})")
-                    if self.action_manager.mouse_controller.move_and_click(token_location.x, token_location.y, enforce_guard=False):
+                    logger.info(f"Clicking instance token at ({token_abs[0]}, {token_abs[1]})")
+                    if self.action_manager.mouse_controller.move_and_click(token_abs[0], token_abs[1], enforce_guard=False, clamp_to_search_roi=False):
                         # Wait for token delay
                         time.sleep(token_delay)
                         
                         # Click teleport location
-                        logger.info(f"Clicking teleport at ({teleport_location.x}, {teleport_location.y})")
-                        if self.action_manager.mouse_controller.move_and_click(teleport_location.x, teleport_location.y, enforce_guard=False):
+                        logger.info(f"Clicking teleport at ({tele_abs[0]}, {tele_abs[1]})")
+                        if self.action_manager.mouse_controller.move_and_click(tele_abs[0], tele_abs[1], enforce_guard=False, clamp_to_search_roi=False):
                             mgr['last_teleport_time'] = now
                             # Publish event
                             self.event_system.publish(EventType.INSTANCE_ENTERED, {
-                                'token_position': (token_location.x, token_location.y),
-                                'teleport_position': (teleport_location.x, teleport_location.y),
+                                'token_position': (token_abs[0], token_abs[1]),
+                                'teleport_position': (tele_abs[0], tele_abs[1]),
                                 'timestamp': now
                             })
                             

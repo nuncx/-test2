@@ -22,7 +22,7 @@ class TeleportLocation:
     def __init__(
         self,
         name: str,
-        coordinate: Coordinate,
+        coordinate: Optional[Coordinate] = None,
         hotkey: Optional[str] = None,
         cooldown: float = 5.0,
         is_emergency: bool = False
@@ -327,17 +327,32 @@ class TeleportManager:
                 success = self.action_manager.execute_action(f"teleport_{name}")
         
         elif location.coordinate:
-            # Use coordinate
-            logger.info(f"Teleporting to '{name}' using coordinate {location.coordinate.x}, {location.coordinate.y}")
-            success = self.action_manager.register_coordinate_action(
-                name=f"teleport_{name}",
-                coordinate=location.coordinate,
-                cooldown=location.cooldown,
-                priority=50
+            # Use coordinate; treat as window-relative when within current window bounds, else legacy absolute
+            try:
+                from ..detection.capture import CaptureService  # type: ignore
+                bbox = CaptureService().get_window_bbox()
+                win_w = int(bbox.get('width', 0))
+                win_h = int(bbox.get('height', 0))
+                cx = int(location.coordinate.x)
+                cy = int(location.coordinate.y)
+                if 0 <= cx <= win_w and 0 <= cy <= win_h:
+                    abs_x = int(bbox.get('left', 0)) + cx
+                    abs_y = int(bbox.get('top', 0)) + cy
+                else:
+                    # Assume legacy absolute
+                    abs_x = cx
+                    abs_y = cy
+            except Exception:
+                abs_x = int(location.coordinate.x)
+                abs_y = int(location.coordinate.y)
+            logger.info(f"Teleporting to '{name}' using coordinate (abs) {abs_x}, {abs_y}")
+            # Perform deterministic click: bypass anti-overclick guard and ROI clamping
+            success = self.action_manager.mouse_controller.move_and_click(
+                abs_x,
+                abs_y,
+                enforce_guard=False,
+                clamp_to_search_roi=False
             )
-            
-            if success:
-                success = self.action_manager.execute_action(f"teleport_{name}")
         
         else:
             logger.error(f"Teleport location '{name}' has no hotkey or coordinate")

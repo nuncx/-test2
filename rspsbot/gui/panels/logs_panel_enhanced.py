@@ -83,10 +83,13 @@ class LogsPanelEnhanced(QWidget):
         # Add stats tab
         self.tab_widget.addTab(stats_widget, "Statistics")
         
-        # Add tooltips
-        TooltipHelper.add_tooltip(self.tab_widget.tabBar().tabButton(0, QTabWidget.LeftSide), "View application logs")
-        TooltipHelper.add_tooltip(self.tab_widget.tabBar().tabButton(1, QTabWidget.LeftSide), "View system and environment information")
-        TooltipHelper.add_tooltip(self.tab_widget.tabBar().tabButton(2, QTabWidget.LeftSide), "View bot statistics")
+        # Add tooltips (use setTabToolTip to avoid platform-specific tab button positions)
+        try:
+            self.tab_widget.setTabToolTip(0, "View application logs")
+            self.tab_widget.setTabToolTip(1, "View system and environment information")
+            self.tab_widget.setTabToolTip(2, "View bot statistics")
+        except Exception:
+            pass
         
         # Update debug info
         self.update_debug_info()

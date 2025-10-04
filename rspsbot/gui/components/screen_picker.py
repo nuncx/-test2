@@ -269,16 +269,23 @@ class ZoomRoiPickerDialog(QDialog):
         self.view.set_image(pm)
 
     def _on_accept(self):
+        """Finalize ROI selection. If no rectangle was drawn, reject dialog."""
+        if self.view is None:
+            self.reject()
+            return
         rect_img = self.view.selected_rect_in_image()
         if rect_img.isNull():
             self.reject()
             return
-        # Store ROI relative to the focused window to avoid absolute drift when the window moves
-        # Consumers should translate using CaptureService.get_window_bbox() when capturing
+        # Store ROI relative to the focused window to avoid absolute drift when the window moves.
         left = rect_img.left()
         top = rect_img.top()
         self.result_rect = QRect(left, top, rect_img.width(), rect_img.height())
         self.accept()
+
+# Backwards compatibility: some panels may import ZoomCoordinatePickerDialog
+class ZoomCoordinatePickerDialog(ZoomRoiPickerDialog):
+    pass
 
 
 class ZoomColorPickerDialog(QDialog):
@@ -351,7 +358,9 @@ class ZoomPointPickerDialog(QDialog):
         self.setWindowTitle("Pick Point from Screenshot")
         self.resize(900, 600)
         self._config = config_manager
-        self.selected_point = None  # (x, y) global
+        # Outputs
+        self.selected_point = None  # (x, y) global absolute
+        self.selected_point_relative = None  # (x, y) relative to focused client window
 
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -379,19 +388,41 @@ class ZoomPointPickerDialog(QDialog):
         # Load screenshot and hook clicks
         pm, self._bbox = grab_focused_window_pixmap(self._config)
         self.view.set_image(pm)
-        self.view.viewport().installEventFilter(self)
+        try:
+            vp = self.view.viewport() if self.view is not None else None
+            if vp is not None:
+                vp.installEventFilter(self)
+        except Exception:
+            pass
 
     def eventFilter(self, obj, event):
-        if obj is self.view.viewport() and event.type() == event.MouseButtonPress:
+        if (self.view is not None and obj is self.view.viewport() and event.type() == event.MouseButtonPress):
             if event.button() == Qt.LeftButton:
                 scene_pos = self.view.mapToScene(event.pos())
                 x = int(scene_pos.x())
                 y = int(scene_pos.y())
-                # Map to global via bbox
-                gx = self._bbox.get('left', 0) + max(0, x)
-                gy = self._bbox.get('top', 0) + max(0, y)
+                # Clamp to image bounds to avoid selecting outside the screenshot
+                try:
+                    if self.view._pix_item is not None:
+                        bounds = self.view._pix_item.boundingRect()
+                        max_w = int(bounds.width())
+                        max_h = int(bounds.height())
+                        x = max(0, min(max_w - 1, x))
+                        y = max(0, min(max_h - 1, y))
+                except Exception:
+                    pass
+                # Save relative to window and also compute global absolute
+                rx = max(0, x)
+                ry = max(0, y)
+                self.selected_point_relative = (int(rx), int(ry))
+                gx = self._bbox.get('left', 0) + int(rx)
+                gy = self._bbox.get('top', 0) + int(ry)
                 self.selected_point = (gx, gy)
-                # Visual feedback: small rect
+                # Immediately accept so the parent receives the selection without requiring pressing OK
+                try:
+                    self.accept()
+                except Exception:
+                    pass
                 return True
         return super().eventFilter(obj, event)
 

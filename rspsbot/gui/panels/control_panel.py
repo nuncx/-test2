@@ -100,12 +100,7 @@ class ControlPanel(QWidget):
         self.enable_teleport_checkbox.toggled.connect(lambda v: self.config_manager.set('enable_teleport', v))
         toggles_layout.addWidget(self.enable_teleport_checkbox)
 
-        # Mirror toggle for Combat Style enforcement (convenience in main tab)
-        self.enable_combat_style_checkbox = QCheckBox("Enable Combat Style")
-        self.enable_combat_style_checkbox.setToolTip("When enabled, the bot will detect current style from Style ROI and click its linked weapon color in the Weapon ROI before attacking.")
-        self.enable_combat_style_checkbox.setChecked(bool(self.config_manager.get('combat_style_enforce', False)))
-        self.enable_combat_style_checkbox.toggled.connect(lambda v: self.config_manager.set('combat_style_enforce', bool(v)))
-        toggles_layout.addWidget(self.enable_combat_style_checkbox)
+    # (Removed) Combat Style enforcement toggle – Multi Monster Mode handles weapon switching
 
         toggles_layout.addStretch()
         settings_layout.addLayout(toggles_layout)
@@ -285,12 +280,12 @@ class ControlPanel(QWidget):
     def refresh_window_list(self):
         """Refresh the window list"""
         try:
+            # Reuse global / controller capture service if available
             from rspsbot.core.detection.capture import CaptureService
-            
-            # Create temporary capture service
-            capture_service = CaptureService()
-            
-            # Get window list
+            capture_service = getattr(getattr(self, 'bot_controller', None), 'capture_service', None)
+            if capture_service is None:
+                capture_service = CaptureService()
+            # Get window list (may be empty if pygetwindow missing)
             windows = capture_service.list_windows()
             
             # Clear and populate combo box
@@ -324,11 +319,9 @@ class ControlPanel(QWidget):
         
         try:
             from rspsbot.core.detection.capture import CaptureService
-            
-            # Create temporary capture service
-            capture_service = CaptureService()
-            
-            # Focus window
+            capture_service = getattr(getattr(self, 'bot_controller', None), 'capture_service', None)
+            if capture_service is None:
+                capture_service = CaptureService()
             success = capture_service.focus_window(window_title)
             
             if success:

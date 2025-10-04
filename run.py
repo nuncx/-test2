@@ -28,6 +28,7 @@ def parse_arguments():
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--profile', type=str, help='Load specific profile on startup')
     parser.add_argument('--no-gui', action='store_true', help='Run without GUI (headless mode)')
+    parser.add_argument('--multi-monster', action='store_true', help='Enable Multi Monster Mode at startup')
     return parser.parse_args()
 
 def main():
@@ -52,6 +53,55 @@ def main():
                 config_manager.load_profile(args.profile)
             else:
                 logger.warning(f"Profile not found: {args.profile}")
+
+        # Ensure HP bar ROI is set to the fixed relative rectangle on startup
+        try:
+            hp_roi = config_manager.get('hpbar_roi')
+            needs_set = False
+            if not hp_roi:
+                needs_set = True
+            elif isinstance(hp_roi, dict):
+                w = int(hp_roi.get('width', 0)); h = int(hp_roi.get('height', 0))
+                l = int(hp_roi.get('left', -1)); t = int(hp_roi.get('top', -1))
+                mode = str(hp_roi.get('mode', 'relative')).lower()
+                if not (l == 25 and t == 79 and w == 100 and h == 17 and mode == 'relative'):
+                    needs_set = True
+            else:
+                needs_set = True
+            if needs_set:
+                from rspsbot.core.config import ROI as ROIModel
+                config_manager.set_roi('hpbar_roi', ROIModel(25, 79, 100, 17, mode='relative'))
+                config_manager.set('hpbar_roi_follow_window', True)
+        except Exception:
+            pass
+
+        # Ensure SEARCH ROI is set to the fixed relative rectangle on startup
+        try:
+            s_roi = config_manager.get('search_roi')
+            needs_set = False
+            if not s_roi:
+                needs_set = True
+            elif isinstance(s_roi, dict):
+                w = int(s_roi.get('width', 0)); h = int(s_roi.get('height', 0))
+                l = int(s_roi.get('left', -1)); t = int(s_roi.get('top', -1))
+                mode = str(s_roi.get('mode', 'relative')).lower()
+                if not (l == 6 and t == 28 and w == 515 and h == 338 and mode == 'relative'):
+                    needs_set = True
+            else:
+                needs_set = True
+            if needs_set:
+                from rspsbot.core.config import ROI as ROIModel
+                config_manager.set_roi('search_roi', ROIModel(6, 28, 515, 338, mode='relative'))
+        except Exception:
+            pass
+
+        # Optional: force-enable Multi Monster Mode via CLI flag
+        if getattr(args, 'multi_monster', False):
+            logger.info("CLI flag --multi-monster provided: enabling Multi Monster Mode")
+            try:
+                config_manager.set('multi_monster_mode_enabled', True)
+            except Exception as e:
+                logger.warning(f"Failed to set multi_monster_mode_enabled via CLI: {e}")
         
         # Initialize bot controller
         bot_controller = BotController(config_manager)

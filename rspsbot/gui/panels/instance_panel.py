@@ -56,12 +56,13 @@ class InstancePanel(QWidget):
         token_layout.addWidget(QLabel("Token Location:"))
         self.token_x_spin = QSpinBox()
         self.token_x_spin.setRange(0, 3000)
-        self.token_x_spin.setValue(self.config_manager.get('instance_token_location', {}).get('x', 0))
+        _token_loc = self.config_manager.get('instance_token_location', {}) or {}
+        self.token_x_spin.setValue(_token_loc.get('x', 0))
         token_layout.addWidget(self.token_x_spin)
         token_layout.addWidget(QLabel("X"))
         self.token_y_spin = QSpinBox()
         self.token_y_spin.setRange(0, 3000)
-        self.token_y_spin.setValue(self.config_manager.get('instance_token_location', {}).get('y', 0))
+        self.token_y_spin.setValue(_token_loc.get('y', 0))
         token_layout.addWidget(self.token_y_spin)
         token_layout.addWidget(QLabel("Y"))
         self.token_pick_btn = QPushButton("Pick From Screen")
@@ -75,12 +76,13 @@ class InstancePanel(QWidget):
         teleport_layout.addWidget(QLabel("Teleport Location:"))
         self.teleport_x_spin = QSpinBox()
         self.teleport_x_spin.setRange(0, 3000)
-        self.teleport_x_spin.setValue(self.config_manager.get('instance_teleport_location', {}).get('x', 0))
+        _tele_loc = self.config_manager.get('instance_teleport_location', {}) or {}
+        self.teleport_x_spin.setValue(_tele_loc.get('x', 0))
         teleport_layout.addWidget(self.teleport_x_spin)
         teleport_layout.addWidget(QLabel("X"))
         self.teleport_y_spin = QSpinBox()
         self.teleport_y_spin.setRange(0, 3000)
-        self.teleport_y_spin.setValue(self.config_manager.get('instance_teleport_location', {}).get('y', 0))
+        self.teleport_y_spin.setValue(_tele_loc.get('y', 0))
         teleport_layout.addWidget(self.teleport_y_spin)
         teleport_layout.addWidget(QLabel("Y"))
         self.teleport_pick_btn = QPushButton("Pick From Screen")
@@ -129,26 +131,84 @@ class InstancePanel(QWidget):
         layout.addStretch()
     
     def on_pick_token_location(self):
-        """Pick token location from screen"""
+        """Pick token location from a zoomed screenshot (window-relative)."""
         try:
-            from ..components.screen_picker import ZoomCoordinatePickerDialog
-            picker = ZoomCoordinatePickerDialog("Select Instance Token Location")
-            if picker.exec_() == ZoomCoordinatePickerDialog.Accepted:
-                x, y = picker.get_coordinate()
-                self.token_x_spin.setValue(x)
-                self.token_y_spin.setValue(y)
+            from ..components.screen_picker import ZoomPointPickerDialog
+            picker = ZoomPointPickerDialog(self.config_manager, self)
+            if picker.exec_() == picker.Accepted:
+                # Prefer window-relative; fall back to absolute if needed
+                rel = getattr(picker, 'selected_point_relative', None)
+                if rel is not None:
+                    rx, ry = rel
+                    self.token_x_spin.setValue(int(rx))
+                    self.token_y_spin.setValue(int(ry))
+                    try:
+                        self.config_manager.set_coordinate('instance_token_location', Coordinate(int(rx), int(ry), 'Instance Token'))
+                    except Exception:
+                        pass
+                else:
+                    abspt = getattr(picker, 'selected_point', None)
+                    if abspt is not None:
+                        ax, ay = abspt
+                        # Map absolute back to window-relative via current bbox
+                        try:
+                            from ...core.detection.capture import CaptureService
+                            bbox = CaptureService().get_window_bbox()
+                            rx = int(ax) - int(bbox.get('left', 0))
+                            ry = int(ay) - int(bbox.get('top', 0))
+                            self.token_x_spin.setValue(rx)
+                            self.token_y_spin.setValue(ry)
+                            try:
+                                self.config_manager.set_coordinate('instance_token_location', Coordinate(int(rx), int(ry), 'Instance Token'))
+                            except Exception:
+                                pass
+                        except Exception:
+                            self.token_x_spin.setValue(int(ax))
+                            self.token_y_spin.setValue(int(ay))
+                            try:
+                                self.config_manager.set_coordinate('instance_token_location', Coordinate(int(ax), int(ay), 'Instance Token'))
+                            except Exception:
+                                pass
         except Exception as e:
             logger.error(f"Error picking token location: {e}")
     
     def on_pick_teleport_location(self):
-        """Pick teleport location from screen"""
+        """Pick teleport location from a zoomed screenshot (window-relative)."""
         try:
-            from ..components.screen_picker import ZoomCoordinatePickerDialog
-            picker = ZoomCoordinatePickerDialog("Select Instance Teleport Location")
-            if picker.exec_() == ZoomCoordinatePickerDialog.Accepted:
-                x, y = picker.get_coordinate()
-                self.teleport_x_spin.setValue(x)
-                self.teleport_y_spin.setValue(y)
+            from ..components.screen_picker import ZoomPointPickerDialog
+            picker = ZoomPointPickerDialog(self.config_manager, self)
+            if picker.exec_() == picker.Accepted:
+                rel = getattr(picker, 'selected_point_relative', None)
+                if rel is not None:
+                    rx, ry = rel
+                    self.teleport_x_spin.setValue(int(rx))
+                    self.teleport_y_spin.setValue(int(ry))
+                    try:
+                        self.config_manager.set_coordinate('instance_teleport_location', Coordinate(int(rx), int(ry), 'Instance Teleport'))
+                    except Exception:
+                        pass
+                else:
+                    abspt = getattr(picker, 'selected_point', None)
+                    if abspt is not None:
+                        ax, ay = abspt
+                        try:
+                            from ...core.detection.capture import CaptureService
+                            bbox = CaptureService().get_window_bbox()
+                            rx = int(ax) - int(bbox.get('left', 0))
+                            ry = int(ay) - int(bbox.get('top', 0))
+                            self.teleport_x_spin.setValue(rx)
+                            self.teleport_y_spin.setValue(ry)
+                            try:
+                                self.config_manager.set_coordinate('instance_teleport_location', Coordinate(int(rx), int(ry), 'Instance Teleport'))
+                            except Exception:
+                                pass
+                        except Exception:
+                            self.teleport_x_spin.setValue(int(ax))
+                            self.teleport_y_spin.setValue(int(ay))
+                            try:
+                                self.config_manager.set_coordinate('instance_teleport_location', Coordinate(int(ax), int(ay), 'Instance Teleport'))
+                            except Exception:
+                                pass
         except Exception as e:
             logger.error(f"Error picking teleport location: {e}")
     
@@ -240,7 +300,12 @@ class InstanceModePanel(QWidget):
         self.hp_timeout_spin.setToolTip("Time (in seconds) after which instance is considered inactive if HP bar is not seen")
         self.hp_timeout_spin.setRange(1.0, 600.0)
         self.hp_timeout_spin.setSingleStep(1.0)
-        self.hp_timeout_spin.setValue(self.config_manager.get('instance_hp_timeout_s', 60.0))
+        # Prefer unified key 'instance_hp_timeout' with fallback to legacy 'instance_hp_timeout_s'
+        try:
+            _hp_to = float(self.config_manager.get('instance_hp_timeout', self.config_manager.get('instance_hp_timeout_s', 60.0)))
+        except Exception:
+            _hp_to = 60.0
+        self.hp_timeout_spin.setValue(_hp_to)
         hp_layout.addWidget(self.hp_timeout_spin)
         hp_layout.addWidget(QLabel("seconds"))
         hp_layout.addStretch()
@@ -351,6 +416,15 @@ class InstanceModePanel(QWidget):
 
         # Aggro potion coordinate selector
         self.aggro_potion_selector = CoordinateSelector(config_manager=self.config_manager, bot_controller=self.bot_controller)
+        # Initialize selector from config (prefer instance-specific key, fallback to generic)
+        try:
+            _c = self.config_manager.get_coordinate('instance_aggro_potion_location')
+            if _c is None:
+                _c = self.config_manager.get_coordinate('aggro_potion_location')
+            if _c is not None:
+                self.aggro_potion_selector.set_coordinate(int(_c.x), int(_c.y))
+        except Exception:
+            pass
         layout.addWidget(self.aggro_potion_selector)
 
         # Per-color minimum pixels threshold
@@ -403,7 +477,11 @@ class InstanceModePanel(QWidget):
         jitter_layout.addWidget(QLabel("Jitter:"))
         self.jitter_spin = QSpinBox()
         self.jitter_spin.setRange(1, 50)
-        self.jitter_spin.setValue(self.config_manager.get('instance_aggro_jitter_percent', 10))
+        _jitter_val = self.config_manager.get('instance_aggro_jitter_percent', 10)
+        try:
+            self.jitter_spin.setValue(int(_jitter_val))
+        except Exception:
+            self.jitter_spin.setValue(10)
         jitter_layout.addWidget(self.jitter_spin)
         jitter_layout.addWidget(QLabel("%"))
         jitter_layout.addStretch()
@@ -438,12 +516,15 @@ class InstanceModePanel(QWidget):
         token_layout.addWidget(QLabel("Token Location:"))
         self.token_x_spin = QSpinBox()
         self.token_x_spin.setRange(0, 3000)
-        self.token_x_spin.setValue(self.config_manager.get('instance_token_location', {}).get('x', 0))
+        token_loc_cfg = self.config_manager.get('instance_token_location') or {}
+        if isinstance(token_loc_cfg, dict):
+            self.token_x_spin.setValue(int(token_loc_cfg.get('x', 0) or 0))
         token_layout.addWidget(self.token_x_spin)
         token_layout.addWidget(QLabel("X"))
         self.token_y_spin = QSpinBox()
         self.token_y_spin.setRange(0, 3000)
-        self.token_y_spin.setValue(self.config_manager.get('instance_token_location', {}).get('y', 0))
+        if isinstance(token_loc_cfg, dict):
+            self.token_y_spin.setValue(int(token_loc_cfg.get('y', 0) or 0))
         token_layout.addWidget(self.token_y_spin)
         token_layout.addWidget(QLabel("Y"))
         self.token_pick_btn = QPushButton("Pick From Screen")
@@ -451,18 +532,21 @@ class InstanceModePanel(QWidget):
         token_layout.addWidget(self.token_pick_btn)
         token_layout.addStretch()
         entry_layout.addLayout(token_layout)
-        
+
         # Teleport Location
         teleport_layout = QHBoxLayout()
         teleport_layout.addWidget(QLabel("Teleport Location:"))
         self.teleport_x_spin = QSpinBox()
         self.teleport_x_spin.setRange(0, 3000)
-        self.teleport_x_spin.setValue(self.config_manager.get('instance_teleport_location', {}).get('x', 0))
+        tele_loc_cfg = self.config_manager.get('instance_teleport_location') or {}
+        if isinstance(tele_loc_cfg, dict):
+            self.teleport_x_spin.setValue(int(tele_loc_cfg.get('x', 0) or 0))
         teleport_layout.addWidget(self.teleport_x_spin)
         teleport_layout.addWidget(QLabel("X"))
         self.teleport_y_spin = QSpinBox()
         self.teleport_y_spin.setRange(0, 3000)
-        self.teleport_y_spin.setValue(self.config_manager.get('instance_teleport_location', {}).get('y', 0))
+        if isinstance(tele_loc_cfg, dict):
+            self.teleport_y_spin.setValue(int(tele_loc_cfg.get('y', 0) or 0))
         teleport_layout.addWidget(self.teleport_y_spin)
         teleport_layout.addWidget(QLabel("Y"))
         self.teleport_pick_btn = QPushButton("Pick From Screen")
@@ -522,24 +606,38 @@ class InstanceModePanel(QWidget):
     def on_pick_token_location(self):
         """Pick token location from screen"""
         try:
-            from ..components.screen_picker import ZoomCoordinatePickerDialog
-            picker = ZoomCoordinatePickerDialog("Select Instance Token Location")
-            if picker.exec_() == ZoomCoordinatePickerDialog.Accepted:
-                x, y = picker.get_coordinate()
-                self.token_x_spin.setValue(x)
-                self.token_y_spin.setValue(y)
+            from ..components.screen_picker import ZoomPointPickerDialog
+            picker = ZoomPointPickerDialog(self.config_manager, self)
+            if picker.exec_() == picker.Accepted:
+                rel = getattr(picker, 'selected_point_relative', None)
+                if rel is not None:
+                    x, y = rel
+                    self.token_x_spin.setValue(int(x))
+                    self.token_y_spin.setValue(int(y))
+                    # Persist immediately so detection/state can use it without pressing Apply
+                    try:
+                        self.config_manager.set_coordinate('instance_token_location', Coordinate(int(x), int(y), 'Instance Token'))
+                    except Exception:
+                        pass
         except Exception as e:
             logger.error(f"Error picking token location: {e}")
     
     def on_pick_teleport_location(self):
         """Pick teleport location from screen"""
         try:
-            from ..components.screen_picker import ZoomCoordinatePickerDialog
-            picker = ZoomCoordinatePickerDialog("Select Instance Teleport Location")
-            if picker.exec_() == ZoomCoordinatePickerDialog.Accepted:
-                x, y = picker.get_coordinate()
-                self.teleport_x_spin.setValue(x)
-                self.teleport_y_spin.setValue(y)
+            from ..components.screen_picker import ZoomPointPickerDialog
+            picker = ZoomPointPickerDialog(self.config_manager, self)
+            if picker.exec_() == picker.Accepted:
+                rel = getattr(picker, 'selected_point_relative', None)
+                if rel is not None:
+                    x, y = rel
+                    self.teleport_x_spin.setValue(int(x))
+                    self.teleport_y_spin.setValue(int(y))
+                    # Persist immediately so detection/state can use it without pressing Apply
+                    try:
+                        self.config_manager.set_coordinate('instance_teleport_location', Coordinate(int(x), int(y), 'Instance Teleport'))
+                    except Exception:
+                        pass
         except Exception as e:
             logger.error(f"Error picking teleport location: {e}")
     
@@ -553,7 +651,13 @@ class InstanceModePanel(QWidget):
         try:
             # Save instance mode settings
             self.config_manager.set('instance_only_mode', self.enable_checkbox.isChecked())
-            self.config_manager.set('instance_hp_timeout_s', self.hp_timeout_spin.value())
+            # Save unified HP timeout key and legacy for compatibility
+            try:
+                _hp_to = float(self.hp_timeout_spin.value())
+            except Exception:
+                _hp_to = 60.0
+            self.config_manager.set('instance_hp_timeout', _hp_to)
+            self.config_manager.set('instance_hp_timeout_s', _hp_to)
             
             # Save aggro settings
             strat_idx = self.aggro_strategy_combo.currentIndex()
@@ -586,11 +690,16 @@ class InstanceModePanel(QWidget):
             self.config_manager.set('instance_token_delay', self.token_delay_spin.value())
             self.config_manager.set('instance_teleport_max_retries', self.max_retries_spin.value())
             
-            # Save aggro potion location from selector
-            self.aggro_potion_selector.save_to_config('aggro_potion_location')
+            # Save aggro potion location from selector (write both instance-specific and generic keys)
+            try:
+                ax, ay = self.aggro_potion_selector.get_coordinate()
+                self.config_manager.set_coordinate('instance_aggro_potion_location', Coordinate(int(ax), int(ay), 'Instance Aggro Potion'))
+                # Generic fallback for modules that still read this key
+                self.config_manager.set_coordinate('aggro_potion_location', Coordinate(int(ax), int(ay), 'Aggro Potion'))
+            except Exception:
+                pass
             
             logger.info("Instance mode settings saved")
-            self.save_instance_mode_settings()
         except Exception as e:
             logger.error(f"Error applying instance mode settings: {e}")
     
@@ -625,8 +734,39 @@ class InstanceModePanel(QWidget):
     def save_instance_mode_settings(self, silent=False):
         """Save all instance mode settings to config"""
         try:
-            # Call on_apply_clicked to save all settings
-            self.on_apply_clicked()
+            # Save a subset of settings with optional UI feedback suppression
+            # Reuse on_apply_clicked logic without re-entrant calls
+            self.config_manager.set('instance_only_mode', self.enable_checkbox.isChecked())
+            try:
+                _hp_to = float(self.hp_timeout_spin.value())
+            except Exception:
+                _hp_to = 60.0
+            self.config_manager.set('instance_hp_timeout', _hp_to)
+            self.config_manager.set('instance_hp_timeout_s', _hp_to)
+            # Aggro settings
+            strat_idx = self.aggro_strategy_combo.currentIndex()
+            strat = 'bar' if strat_idx == 0 else ('timer' if strat_idx == 1 else 'hybrid')
+            self.config_manager.set('instance_aggro_strategy', strat)
+            self.config_manager.set('instance_aggro_min_pixels_per_color', self.aggro_min_pixels_spin.value())
+            self.config_manager.set('instance_aggro_interval_min', self.aggro_interval_spin.value())
+            self.config_manager.set('instance_aggro_start_delay_s', self.start_delay_spin.value())
+            self.config_manager.set('instance_aggro_jitter_enabled', self.jitter_checkbox.isChecked())
+            self.config_manager.set('instance_aggro_jitter_percent', self.jitter_spin.value())
+            # Teleport settings
+            self.config_manager.set('instance_post_teleport_hp_wait', self.post_teleport_hp_wait_spin.value())
+            # Token/teleport locations
+            self.config_manager.set_coordinate('instance_token_location', Coordinate(int(self.token_x_spin.value()), int(self.token_y_spin.value()), 'Instance Token'))
+            self.config_manager.set_coordinate('instance_teleport_location', Coordinate(int(self.teleport_x_spin.value()), int(self.teleport_y_spin.value()), 'Instance Teleport'))
+            # Delays and retries
+            self.config_manager.set('instance_token_delay', self.token_delay_spin.value())
+            self.config_manager.set('instance_teleport_max_retries', self.max_retries_spin.value())
+            # Aggro potion coordinate
+            try:
+                ax, ay = self.aggro_potion_selector.get_coordinate()
+                self.config_manager.set_coordinate('instance_aggro_potion_location', Coordinate(int(ax), int(ay), 'Instance Aggro Potion'))
+                self.config_manager.set_coordinate('aggro_potion_location', Coordinate(int(ax), int(ay), 'Aggro Potion'))
+            except Exception:
+                pass
             if not silent:
                 QMessageBox.information(self, "Settings Saved", "Instance mode settings have been saved.")
             return True

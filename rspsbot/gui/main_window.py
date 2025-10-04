@@ -3,8 +3,8 @@ Main window for RSPS Color Bot v3
 """
 import logging
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QTabWidget, QStatusBar, QLabel, QPushButton
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTabWidget, QStatusBar, QLabel, QPushButton, QScrollArea
 )
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal
 
@@ -18,6 +18,7 @@ from .panels.instance_panel import InstancePanel
 from .panels.stats_panel import StatsPanel
 from .panels.multi_monster_panel import MultiMonsterPanel
 from .visualization.debug_overlay import DebugOverlayWindow
+from .panels.chat_panel import ChatPanel
 
 # Get module logger
 logger = logging.getLogger('rspsbot.gui.main_window')
@@ -43,7 +44,19 @@ class MainWindow(QMainWindow):
         
         # Set window properties
         self.setWindowTitle("RSPS Color Bot v3")
-        self.setMinimumSize(1000, 700)
+        # Expanded default + minimum to reduce initial crowding
+        self.resize(1300, 900)
+        self.setMinimumSize(1100, 750)
+        try:
+            # Restore previous geometry if stored
+            last_size = self.config_manager.get('ui_main_window_size')
+            if isinstance(last_size, (list, tuple)) and len(last_size) == 2:
+                self.resize(int(last_size[0]), int(last_size[1]))
+            last_pos = self.config_manager.get('ui_main_window_pos')
+            if isinstance(last_pos, (list, tuple)) and len(last_pos) == 2:
+                self.move(int(last_pos[0]), int(last_pos[1]))
+        except Exception:
+            pass
         
         # Create central widget and layout
         self.central_widget = QWidget()
@@ -108,62 +121,111 @@ class MainWindow(QMainWindow):
     
     def init_tabs(self):
         """Initialize tabs"""
-        # Main control tab
+        # Helper to wrap large content widgets with a scroll area (vertical scroll only)
+        def make_scrollable(widget: QWidget, name: str):
+            sa = QScrollArea()
+            sa.setWidgetResizable(True)
+            # Use Qt.ScrollBarAlwaysOff constant; some type checkers may not resolve attribute on Qt alias
+            try:
+                sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            except Exception:
+                from PyQt5 import QtCore
+                sa.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            sa.setWidget(widget)
+            sa.setObjectName(f"scroll_{name}")
+            return sa
+
+        # Main control tab (lightweight – no scroll needed)
         self.control_tab = ControlPanel(self.config_manager, self.bot_controller)
         self.tab_widget.addTab(self.control_tab, "Main")
-        
-        # Detection settings tab
+        # Detection settings tab (heavy)
         self.detection_tab = DetectionPanel(self.config_manager, self.bot_controller)
-        self.tab_widget.addTab(self.detection_tab, "Detection Settings")
-        
+        self.tab_widget.addTab(make_scrollable(self.detection_tab, "detection"), "Detection Settings")
+
         # Combat settings tab
         self.combat_tab = CombatPanel(self.config_manager, self.bot_controller)
-        self.tab_widget.addTab(self.combat_tab, "Combat Settings")
-        
+        self.tab_widget.addTab(make_scrollable(self.combat_tab, "combat"), "Combat Settings")
+
         # Multi Monster Mode tab
         self.multi_monster_tab = MultiMonsterPanel(self.config_manager, self.bot_controller)
-        self.tab_widget.addTab(self.multi_monster_tab, "Multi Monster Mode")
-        
+        self.tab_widget.addTab(make_scrollable(self.multi_monster_tab, "multi_monster"), "Multi Monster Mode")
+
         # Teleport settings tab
         self.teleport_tab = TeleportPanel(self.config_manager, self.bot_controller)
-        self.tab_widget.addTab(self.teleport_tab, "Teleport Settings")
-        
+        self.tab_widget.addTab(make_scrollable(self.teleport_tab, "teleport"), "Teleport Settings")
+
         # Potion settings tab
         self.potion_tab = PotionPanel(self.config_manager, self.bot_controller)
-        self.tab_widget.addTab(self.potion_tab, "Potion Settings")
-        
+        self.tab_widget.addTab(make_scrollable(self.potion_tab, "potion"), "Potion Settings")
+
         # Instance settings tab (entry/teleport basics)
         self.instance_tab = InstancePanel(self.config_manager, self.bot_controller)
-        self.tab_widget.addTab(self.instance_tab, "Instance Settings")
+        self.tab_widget.addTab(make_scrollable(self.instance_tab, "instance"), "Instance Settings")
 
         # Instance Mode main tab (new, reorganized)
         from .panels.instance_panel import InstanceModePanel
         self.instance_mode_tab = InstanceModePanel(self.config_manager, self.bot_controller)
-        self.tab_widget.addTab(self.instance_mode_tab, "Instance Mode")
-        
-        # Statistics tab
+        self.tab_widget.addTab(make_scrollable(self.instance_mode_tab, "instance_mode"), "Instance Mode")
+
+        # Statistics tab (small enough left unwrapped)
         self.stats_tab = StatsPanel(self.config_manager, self.bot_controller)
         self.tab_widget.addTab(self.stats_tab, "Statistics")
-        
-        # Profiles tab
-        self.profiles_tab = ProfilesPanel(self.config_manager)
-        self.tab_widget.addTab(self.profiles_tab, "Profiles")
 
-        # Connect pre-save hook: before profiles panel saves, flush Instance Mode edits
+        # Profiles tab (can grow vertically depending on content)
+        self.profiles_tab = ProfilesPanel(self.config_manager)
+        self.tab_widget.addTab(make_scrollable(self.profiles_tab, "profiles"), "Profiles")
+
+        # Chat tab
+        self.chat_tab = ChatPanel(self.config_manager, self.bot_controller)
+        self.tab_widget.addTab(make_scrollable(self.chat_tab, "chat"), "Chat")
+
+        # Connect pre-save hook: before profiles panel saves, flush edits from key tabs so all UI state lands in config
         try:
-            # Monkey-patch the profiles panel to emit our hook before saving
             orig_on_save = self.profiles_tab.on_save_clicked
             orig_on_save_as = self.profiles_tab.on_save_as_clicked
+            orig_on_load = self.profiles_tab.on_load_clicked
 
             def wrapped_on_save():
                 try:
-                    # Flush Instance Mode edits silently before profile save
+                    # Instance Mode composite settings
                     if hasattr(self, 'instance_mode_tab') and hasattr(self.instance_mode_tab, 'save_instance_mode_settings'):
                         self.instance_mode_tab.save_instance_mode_settings(silent=True)
-                    
-                    # Flush Multi Monster Mode edits silently before profile save
-                    if hasattr(self, 'multi_monster_tab') and hasattr(self.multi_monster_tab, 'on_apply_clicked'):
-                        self.multi_monster_tab.on_apply_clicked()
+                    # Instance basic tab (token/teleport)
+                    if hasattr(self, 'instance_tab') and hasattr(self.instance_tab, 'on_apply_clicked'):
+                        self.instance_tab.on_apply_clicked()
+                    # Multi Monster: save all sub-sections silently
+                    if hasattr(self, 'multi_monster_tab') and hasattr(self.multi_monster_tab, 'save_all_settings'):
+                        self.multi_monster_tab.save_all_settings(silent=True)
+                    else:
+                        # Fallback: call individual apply methods if present
+                        if hasattr(self.multi_monster_tab, 'on_apply_clicked'):
+                            self.multi_monster_tab.on_apply_clicked(silent=True)
+                        if hasattr(self.multi_monster_tab, 'on_monsters_apply_clicked'):
+                            self.multi_monster_tab.on_monsters_apply_clicked(silent=True)
+                        if hasattr(self.multi_monster_tab, 'on_weapons_apply_clicked'):
+                            self.multi_monster_tab.on_weapons_apply_clicked(silent=True)
+                    # Combat tab general apply if available
+                    if hasattr(self, 'combat_tab') and hasattr(self.combat_tab, 'on_apply_clicked'):
+                        # Some panels may not accept silent; try with kw if supported, else no-arg
+                        try:
+                            self.combat_tab.on_apply_clicked(silent=True)
+                        except TypeError:
+                            self.combat_tab.on_apply_clicked()
+                    # Ensure HP bar color and Tile color editors flush their state before save
+                    try:
+                        if hasattr(self, 'combat_tab') and hasattr(self.combat_tab, 'hpbar_color_editor'):
+                            spec = self.combat_tab.hpbar_color_editor.get_color_spec()
+                            if spec is not None:
+                                self.config_manager.set_color_spec('hpbar_color', spec)
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, 'detection_tab') and hasattr(self.detection_tab, 'tile_color_editor'):
+                            spec = self.detection_tab.tile_color_editor.get_color_spec()
+                            if spec is not None:
+                                self.config_manager.set_color_spec('tile_color', spec)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 self.beforeProfileSave.emit()
@@ -173,10 +235,37 @@ class MainWindow(QMainWindow):
                 try:
                     if hasattr(self, 'instance_mode_tab') and hasattr(self.instance_mode_tab, 'save_instance_mode_settings'):
                         self.instance_mode_tab.save_instance_mode_settings(silent=True)
-                    
-                    # Flush Multi Monster Mode edits silently before profile save
-                    if hasattr(self, 'multi_monster_tab') and hasattr(self.multi_monster_tab, 'on_apply_clicked'):
-                        self.multi_monster_tab.on_apply_clicked()
+                    if hasattr(self, 'instance_tab') and hasattr(self.instance_tab, 'on_apply_clicked'):
+                        self.instance_tab.on_apply_clicked()
+                    if hasattr(self, 'multi_monster_tab') and hasattr(self.multi_monster_tab, 'save_all_settings'):
+                        self.multi_monster_tab.save_all_settings(silent=True)
+                    else:
+                        if hasattr(self.multi_monster_tab, 'on_apply_clicked'):
+                            self.multi_monster_tab.on_apply_clicked(silent=True)
+                        if hasattr(self.multi_monster_tab, 'on_monsters_apply_clicked'):
+                            self.multi_monster_tab.on_monsters_apply_clicked(silent=True)
+                        if hasattr(self.multi_monster_tab, 'on_weapons_apply_clicked'):
+                            self.multi_monster_tab.on_weapons_apply_clicked(silent=True)
+                    if hasattr(self, 'combat_tab') and hasattr(self.combat_tab, 'on_apply_clicked'):
+                        try:
+                            self.combat_tab.on_apply_clicked(silent=True)
+                        except TypeError:
+                            self.combat_tab.on_apply_clicked()
+                    # Ensure HP bar color and Tile color editors flush their state before save-as
+                    try:
+                        if hasattr(self, 'combat_tab') and hasattr(self.combat_tab, 'hpbar_color_editor'):
+                            spec = self.combat_tab.hpbar_color_editor.get_color_spec()
+                            if spec is not None:
+                                self.config_manager.set_color_spec('hpbar_color', spec)
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, 'detection_tab') and hasattr(self.detection_tab, 'tile_color_editor'):
+                            spec = self.detection_tab.tile_color_editor.get_color_spec()
+                            if spec is not None:
+                                self.config_manager.set_color_spec('tile_color', spec)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 self.beforeProfileSave.emit()
@@ -184,12 +273,25 @@ class MainWindow(QMainWindow):
 
             self.profiles_tab.on_save_clicked = wrapped_on_save
             self.profiles_tab.on_save_as_clicked = wrapped_on_save_as
+            
+            def wrapped_on_load():
+                # Let the original handler perform the load (and show messages)
+                res = orig_on_load()
+                # After a successful load, refresh key tabs to reflect new config
+                try:
+                    if hasattr(self, 'multi_monster_tab') and hasattr(self.multi_monster_tab, 'reload_from_config'):
+                        self.multi_monster_tab.reload_from_config()
+                except Exception:
+                    pass
+                return res
+
+            self.profiles_tab.on_load_clicked = wrapped_on_load
         except Exception as e:
             logger.error(f"Failed to wire profile pre-save hook: {e}")
-        
+
         # Logs tab
         self.logs_tab = LogsPanel(self.config_manager)
-        self.tab_widget.addTab(self.logs_tab, "Logs & Debug")
+        self.tab_widget.addTab(make_scrollable(self.logs_tab, "logs"), "Logs & Debug")
     
     def init_status_bar(self):
         """Initialize the status bar"""
@@ -248,7 +350,8 @@ class MainWindow(QMainWindow):
         # Update debug overlay if enabled
         try:
             if self.debug_overlay is not None:
-                debug_enabled = bool(self.config_manager.get('debug_overlay_enabled', False))
+                # Use the same key the Control Panel toggles and the overlay reads
+                debug_enabled = bool(self.config_manager.get('debug_overlay', False))
                 if debug_enabled and not self.debug_overlay.isVisible():
                     self.debug_overlay.show()
                 elif not debug_enabled and self.debug_overlay.isVisible():
@@ -298,6 +401,15 @@ class MainWindow(QMainWindow):
         # Hide debug overlay if visible
         if self.debug_overlay is not None and self.debug_overlay.isVisible():
             self.debug_overlay.hide()
+
+        # Persist window geometry for next launch
+        try:
+            size = self.size()
+            pos = self.pos()
+            self.config_manager.set('ui_main_window_size', [size.width(), size.height()])
+            self.config_manager.set('ui_main_window_pos', [pos.x(), pos.y()])
+        except Exception:
+            pass
         
         # Accept the event
         event.accept()

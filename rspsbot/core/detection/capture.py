@@ -20,25 +20,43 @@ class CaptureService:
     It uses caching to improve performance and supports multi-monitor setups.
     """
     
-    def __init__(self, cache_ttl: float = 0.05):
-        """
-        Initialize the capture service
-        
-        Args:
-            cache_ttl: Time-to-live for cached captures in seconds
-        """
+    _global_instance = None  # lightweight singleton (same process)
+
+    def __new__(cls, *args, **kwargs):
+        """Provide a simple singleton-style instance so ad-hoc GUI helpers reuse
+        the same underlying MSS resources and avoid log spam. If a distinct
+        instance is ever required (e.g. different cache_ttl), caller can pass
+        force_new=True in kwargs."""
+        force_new = kwargs.pop('force_new', False)
+        if not force_new and cls._global_instance is not None:
+            return cls._global_instance
+        inst = super().__new__(cls)
+        if not force_new:
+            cls._global_instance = inst
+        return inst
+
+    def __init__(self, cache_ttl: float = 0.05, force_new: bool = False):
+        """Initialize the capture service (idempotent for singleton reuse)."""
+        # If we've already run initialization for the singleton instance, skip to avoid log spam.
+        if getattr(self, '_initialized', False):
+            return
+
         # MSS is not thread-safe, so we use thread-local storage
         self._tls = threading.local()
-        
+
         # Cache settings
         self.cache_ttl = cache_ttl
         self._cache = {}
         self._cache_lock = threading.RLock()
-        
-        # Window information
+
+        # Window information & focus logging throttle
         self._window_bbox = None
-        
-        logger.info("Capture service initialized")
+        self._last_focus_title: Optional[str] = None
+        self._last_focus_log_time: float = 0.0
+        self._focus_log_interval: float = 30.0  # seconds between identical focus info logs
+
+        logger.debug("Capture service initialized")
+        self._initialized = True
     
     def _get_mss(self):
         """
@@ -109,7 +127,14 @@ class CaptureService:
                             "height": w.height
                         }
                         
-                        logger.info(f"Focused window: {w.title}")
+                        # Throttled logging: only log at INFO if title changed or interval elapsed; else debug.
+                        now = time.time()
+                        if (self._last_focus_title != w.title) or (now - self._last_focus_log_time > self._focus_log_interval):
+                            logger.info(f"Focused window: {w.title}")
+                            self._last_focus_log_time = now
+                            self._last_focus_title = w.title
+                        else:
+                            logger.debug(f"Focused window unchanged: {w.title}")
                         return True
                     except Exception as e:
                         logger.error(f"Error focusing window: {e}")
@@ -206,14 +231,34 @@ class CaptureService:
             roi_dict = roi
 
         # Normalize ROI coordinates to absolute screen space.
-        # If ROI appears to be client-relative (i.e., left/top within window bounds),
-        # translate it by the current focused window bbox so it remains correct when the
-        # window moves. If it already looks absolute (falls within window's absolute range),
-        # leave it as-is.
+        # Supports modes:
+        #  - absolute: use as-is
+        #  - relative: add window bbox offset
+        #  - percent: multiply by window size then add offset
+        # Heuristic fallback: if ROI appears client-relative, translate by window bbox.
         try:
             bbox = self.get_window_bbox()
             l, t, w, h = int(roi_dict.get('left', 0)), int(roi_dict.get('top', 0)), int(roi_dict.get('width', 0)), int(roi_dict.get('height', 0))
-            mode = str(roi_dict.get('mode', 'absolute'))
+            mode = str(roi_dict.get('mode', 'absolute')).lower()
+            if mode == 'percent':
+                # Re-read as floats
+                lf = float(roi_dict.get('left', 0.0)); tf = float(roi_dict.get('top', 0.0))
+                wf = float(roi_dict.get('width', 0.0)); hf = float(roi_dict.get('height', 0.0))
+                roi_dict = {
+                    'left': int(bbox['left'] + lf * bbox['width']),
+                    'top': int(bbox['top'] + tf * bbox['height']),
+                    'width': int(max(1, wf * bbox['width'])),
+                    'height': int(max(1, hf * bbox['height'])),
+                    'mode': 'absolute'
+                }
+            elif mode == 'relative':
+                roi_dict = {
+                    'left': bbox['left'] + l,
+                    'top': bbox['top'] + t,
+                    'width': w,
+                    'height': h,
+                    'mode': 'absolute'
+                }
             # Heuristic: treat as absolute if coordinates lie within the absolute window rectangle
             within_abs_window = (
                 l >= bbox['left'] - 2 and l <= bbox['left'] + bbox['width'] + 2 and
@@ -221,7 +266,7 @@ class CaptureService:
             )
             # Treat as relative if clearly within client area dimensions
             looks_relative = (l < bbox['width'] and t < bbox['height'] and w <= bbox['width'] and h <= bbox['height'])
-            if mode == 'relative' or (not within_abs_window and looks_relative):
+            if mode not in ('relative', 'percent') and (not within_abs_window and looks_relative):
                 roi_dict = {
                     'left': bbox['left'] + l,
                     'top': bbox['top'] + t,

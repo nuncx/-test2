@@ -111,46 +111,55 @@ class ColorSpec:
 class ROI:
     """
     Region of interest on the screen
-    
+
     Attributes:
-        left: Left coordinate of the ROI
-        top: Top coordinate of the ROI
-        width: Width of the ROI in pixels
-        height: Height of the ROI in pixels
+        left: Left coordinate of the ROI. For mode 'absolute'/'relative': pixels. For 'percent': 0..1 fraction of window width
+        top: Top coordinate of the ROI. For mode 'absolute'/'relative': pixels. For 'percent': 0..1 fraction of window height
+        width: Width of the ROI. Pixels unless mode 'percent' (0..1 of window width)
+        height: Height of the ROI. Pixels unless mode 'percent' (0..1 of window height)
+        mode: 'absolute' (screen), 'relative' (client window pixels), or 'percent' (fractions of client window)
     """
-    left: int
-    top: int
-    width: int
-    height: int
-    mode: str = 'absolute'  # 'absolute' or 'relative' to focused window
-    
+    left: float
+    top: float
+    width: float
+    height: float
+    mode: str = 'absolute'  # 'absolute' | 'relative' | 'percent'
+
     def __post_init__(self):
         """Validate ROI parameters"""
-        if self.width <= 0:
-            raise ValueError(f"ROI width must be positive, got {self.width}")
-        if self.height <= 0:
-            raise ValueError(f"ROI height must be positive, got {self.height}")
+        m = (self.mode or 'absolute').lower()
+        if m == 'percent':
+            # Allow tiny epsilons but clamp to [0,1]
+            if not (0.0 <= float(self.left) <= 1.0 and 0.0 <= float(self.top) <= 1.0):
+                raise ValueError(f"Percent ROI left/top must be within 0..1, got ({self.left},{self.top})")
+            if not (0.0 < float(self.width) <= 1.0 and 0.0 < float(self.height) <= 1.0):
+                raise ValueError(f"Percent ROI width/height must be within (0..1], got ({self.width}x{self.height})")
+        else:
+            # Pixels
+            if int(self.width) <= 0:
+                raise ValueError(f"ROI width must be positive, got {self.width}")
+            if int(self.height) <= 0:
+                raise ValueError(f"ROI height must be positive, got {self.height}")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert ROI to dictionary format"""
         return {
-            "left": self.left,
-            "top": self.top,
-            "width": self.width,
-            "height": self.height,
+            "left": float(self.left) if self.mode == 'percent' else int(self.left),
+            "top": float(self.top) if self.mode == 'percent' else int(self.top),
+            "width": float(self.width) if self.mode == 'percent' else int(self.width),
+            "height": float(self.height) if self.mode == 'percent' else int(self.height),
             "mode": self.mode
         }
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ROI':
         """Create ROI from dictionary"""
-        return cls(
-            left=data["left"],
-            top=data["top"],
-            width=data["width"],
-            height=data["height"],
-            mode=data.get("mode", 'absolute')
-        )
+        mode = str(data.get("mode", 'absolute')).lower()
+        # Accept ints or floats
+        l = data["left"]; t = data["top"]; w = data["width"]; h = data["height"]
+        if mode == 'percent':
+            return cls(left=float(l), top=float(t), width=float(w), height=float(h), mode=mode)
+        return cls(left=int(l), top=int(t), width=int(w), height=int(h), mode=mode)
 
 @dataclass
 class Coordinate:
@@ -229,10 +238,13 @@ class ConfigManager:
             "search_step": 2,
             "detect_tiles": True,
             "detect_monsters": True,
-            "tile_min_area": 20,
-            "monster_min_area": 10,
+                # Default SEARCH ROI anchored to client window
+                "search_roi": ROI(6, 28, 515, 338, mode='relative').to_dict(),
+                # Default HP bar ROI anchored to client window
+                "hpbar_roi": ROI(25, 79, 100, 17, mode='relative').to_dict(),
             "around_tile_radius": 120,
-            "use_precise_mode": True,
+                # Quick-setup prompt disabled (we hardcode HP bar ROI)
+                "roi_quick_setup_on_start": False,
             "monster_scan_step": 1,
             "enable_monster_full_fallback": False,
             "adaptive_search": True,
@@ -252,16 +264,20 @@ class ConfigManager:
             "detection_cache_ttl": 0.08,
             
             # Colors
-            "tile_color": asdict(ColorSpec((255, 0, 0))),
+            "tile_color": asdict(ColorSpec((250, 0, 255), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60)),
             "monster_colors": [
                 asdict(ColorSpec((0, 255, 0), tol_rgb=35, tol_h=14, tol_s=70, tol_v=70)),
                 asdict(ColorSpec((255, 255, 0), tol_rgb=35, tol_h=14, tol_s=70, tol_v=70))
             ],
-            "hpbar_color": asdict(ColorSpec((255, 0, 0))),
+            "hpbar_color": asdict(ColorSpec((179, 36, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60)),
             
-            # ROIs
-            "search_roi": None,
-            "hpbar_roi": None,
+            # ROIs (explicit defaults; window-anchored)
+            "search_roi": ROI(6, 28, 515, 338, mode='relative').to_dict(),
+            "hpbar_roi": ROI(25, 79, 100, 17, mode='relative').to_dict(),
+            # Quick-setup prompt disabled (fixed ROIs applied automatically)
+            "roi_quick_setup_on_start": False,
+            # ROI behavior
+            "hpbar_roi_follow_window": True,  # when true, store HP ROI as client-relative so it follows window
             
             # Combat settings
             "hpbar_detect_enabled": True,
@@ -287,7 +303,9 @@ class ConfigManager:
             "click_delay": 0.05,
             "click_after_found_sleep": 0.4,
             "min_monster_click_cooldown_s": 0.8,
+            "min_monster_click_distance_enabled": True,
             "min_monster_click_distance_px": 12,
+            "attack_grace_s": 0.6,
             # Low-confidence click mode
             "low_confidence_click_enabled": True,
             "low_confidence_area_threshold": 220.0,
@@ -307,6 +325,42 @@ class ConfigManager:
             "overlay_follow_window": False,
             "debug_save_snapshots": False,
             "debug_output_dir": "outputs",
+
+            # Chat watcher defaults
+            "chat_enabled": False,
+            # OCR language for Tesseract (e.g., 'eng', 'deu', or 'eng+por')
+            "chat_ocr_lang": "eng",
+            # Default Chat ROI anchored to client window (requested defaults)
+            "chat_roi": ROI(5, 367, 510, 118, mode='relative').to_dict(),
+            "chat_poll_ms": 600,
+            "chat_min_confidence": 65,
+            "chat_normalize_case": True,
+            # Color verification thresholds for chat line matching (lowered for small text)
+            "chat_color_verify_min_ratio": 0.01,   # 1% of bbox pixels must match target color
+            "chat_color_verify_min_pixels": 15,    # or at least this many pixels
+            "chat_debug_save": False,              # when true, save debug crops/masks of matched lines
+            # Optional template verification (grayscale NCC); if a template path is set for a pattern,
+            # the match must exceed the threshold in addition to color verification
+            "chat_template_enable": False,
+            "chat_template_threshold": 0.7,
+            "chat_template_ybr_path": None,
+            "chat_template_prayer_disabled_path": None,
+            "chat_template_rebirth_disabled_path": None,
+            # Simple trigger templates; users can edit in GUI
+            "chat_triggers": [
+                {"pattern": "Your prayers have been disabled!", "regex": False, "action": "enable_prayer"},
+                {"pattern": "YOU BETTER RUN!", "regex": False, "action": "click_ybr_tile"},
+                {"pattern": "Rebirth Demon disabled your prayers", "regex": False, "action": "enable_prayer"}
+            ],
+            # Action parameters: coordinates and colors used by chat actions
+            # Coordinate is stored window-relative; converted to absolute at click time
+            "chat_prayer_enable_xy": {"x": 747, "y": 99},
+            # YBR clickable tile color spec (requested default)
+            "chat_ybr_tile_color": asdict(ColorSpec((255, 212, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60)),
+            # Optional text color references for chat lines (not required by OCR but stored for clarity/tools)
+            "chat_text_color_prayer_disabled": asdict(ColorSpec((255, 0, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60)),
+            "chat_text_color_ybr": asdict(ColorSpec((0, 0, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60)),
+            "chat_text_color_rebirth_disabled": asdict(ColorSpec((0, 0, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60)),
             
             # New v3 settings
             # Combat precise small-ROI detection
@@ -321,6 +375,24 @@ class ConfigManager:
             "teleport_locations": [],
             "emergency_teleport_hotkey": "ctrl+h",
             "return_teleport_hotkey": "ctrl+t",
+
+            # 1 Tele 1 Kill mode
+            # When enabled, overrides normal combat logic: search -> attack -> wait for HP; if not seen in timeout, teleport
+            "one_tele_one_kill_enabled": False,
+            "one_tele_one_kill_hp_timeout_s": 5.0,
+            # Coordinate to click for teleport (selected in GUI)
+            "one_tele_one_kill_teleport_xy": None,
+            # New: ROI to click randomly inside to trigger teleport (if enabled)
+            # Store as ROI object via set_roi/get_roi; typically use 'relative' mode to follow window.
+            "one_tele_one_kill_teleport_roi": None,
+            # Toggle to use ROI click instead of fixed coordinate (default off to preserve behavior)
+            "one_tele_use_roi": False,
+            # Optionally press a hotkey right after teleport click
+            "one_tele_post_hotkey_enabled": False,
+            # Default hotkey after teleport
+            "one_tele_post_hotkey": "2",
+            # Small delay before pressing the hotkey (seconds)
+            "one_tele_post_hotkey_delay": 0.15,
             
             # Potion settings
             "potion_locations": [],
@@ -359,7 +431,62 @@ class ConfigManager:
             
             # Lab color matching settings (enhanced defaults)
             "combat_lab_tolerance": 15,  # Default Lab tolerance for combat style detection
-            "weapon_lab_tolerance": 10,  # Default Lab tolerance for weapon detection
+            # Weapon detection gating (match requested normal counts lab=20, S>=20, V>=30)
+            "weapon_lab_tolerance": 20,
+            "weapon_sat_min": 20,
+            "weapon_val_min": 30,
+            # Weapon detection helpers
+            "weapon_infer_current_from_missing": True,  # If two styles are visible, infer current as the missing one
+            "weapon_melee_loosen": True,               # Loosen gating for melee (dark/low-chroma icons)
+            "weapon_melee_lab_min": 18,                # Min Lab tolerance when loosening melee gating
+            # Visible styles acceptance thresholds (for Visible list in UI/logic)
+            # Base absolute acceptance for any style to be considered visible
+            "weapon_visible_min_pixels": 13,
+            # Adaptive acceptance relative to strongest style
+            "weapon_visible_ratio": 0.40,
+            # Absolute floor for adaptive acceptance
+            "weapon_visible_floor": 5,
+            # Magic-specific lenient visibility (to include very low counts like 9)
+            "weapon_magic_lenient_visible": True,
+            "weapon_magic_visible_floor": 8,
+            # Legacy adaptive keys retained for backward compat (used by some tools)
+            "weapon_adaptive_enable": True,
+            "weapon_adaptive_ratio": 0.5,
+            "weapon_adaptive_min_pixels": 5,
+            "weapon_adaptive_secondary": True,  # Apply adaptive selection even if some styles already passed absolute threshold
+
+            # Template-assist for low-chroma icons (e.g., melee)
+            # When color detection is unreliable, optionally supply a small template image
+            # and we'll use edge-based normalized cross-correlation to confirm presence.
+            # Provide absolute file paths or paths relative to project root.
+            "weapon_template_enable": True,
+            "weapon_template_mode": "edge",        # 'edge' (Canny edges) or 'gray' (grayscale NCC)
+            "weapon_template_threshold": 0.58,      # MatchTemplate score threshold (0..1)
+            "weapon_melee_template_path": None,     # e.g., "profiles/examples/melee_icon.png"
+            "weapon_ranged_template_path": None,
+            "weapon_magic_template_path": None,
+            # Optional search window around configured click positions (pixels)
+            # If not set, full weapon ROI is searched.
+            "weapon_template_window": 200,
+            # Whether a template PASS should influence "equipped" detection counts.
+            # Off by default: template primarily assists visibility; equipped should be inferred by absence.
+            "weapon_template_affects_equipped": False,
+
+            # Default Multi Monster weapon color specs (ensures all 3 are present by default)
+            "multi_monster_melee_weapon_color": asdict(ColorSpec((5, 5, 10), tol_rgb=20, tol_h=3, tol_s=25, tol_v=25)),
+            "multi_monster_ranged_weapon_color": asdict(ColorSpec((255, 0, 0), tol_rgb=20, tol_h=3, tol_s=25, tol_v=25)),
+            "multi_monster_magic_weapon_color": asdict(ColorSpec((99, 35, 52), tol_rgb=20, tol_h=3, tol_s=25, tol_v=25)),
+            # Multi Monster general defaults
+            "multi_monster_mode_enabled": False,
+            # Tile radius override for Multi Monster Mode (strict gating)
+            "multi_monster_tile_radius": 120,
+            # Weapon switching timings and verification
+            "multi_monster_weapon_switch_cooldown_s": 0.6,
+            # Delay after verified switch before attacking
+            "multi_monster_weapon_switch_to_attack_delay_s": 0.5,
+            # Retry logic for weapon switching: verify color disappears; retry if not
+            "multi_monster_weapon_switch_max_retries": 5,
+            "multi_monster_weapon_switch_retry_delay_s": 0.5,
         }
     
     def get(self, key: str, default: Any = None) -> Any:
@@ -394,6 +521,14 @@ class ConfigManager:
             key: Configuration key
             value: Configuration value
         """
+        # Normalize known structured types to JSON-serializable forms
+        try:
+            if isinstance(value, ROI):
+                value = value.to_dict()
+            elif isinstance(value, ColorSpec):
+                value = asdict(value)
+        except Exception:
+            pass
         # Handle nested keys with dot notation
         if "." in key:
             parts = key.split(".")
@@ -443,15 +578,24 @@ class ConfigManager:
         Returns:
             ROI object or None if not found
         """
-        roi_dict = self.get(key)
-        if not roi_dict:
+        roi_val = self.get(key)
+        if not roi_val:
             return None
-        
-        try:
-            return ROI.from_dict(roi_dict)
-        except (KeyError, ValueError, TypeError) as e:
-            logger.error(f"Error creating ROI from {key}: {e}")
-            return None
+        # Already ROI instance
+        if isinstance(roi_val, ROI):
+            return roi_val
+        # Legacy stored as dict
+        if isinstance(roi_val, dict):
+            try:
+                # Validate required keys
+                if 'left' not in roi_val or 'top' not in roi_val or 'width' not in roi_val or 'height' not in roi_val:
+                    raise ValueError(f"ROI missing required keys: {roi_val}")
+                return ROI.from_dict(roi_val)
+            except Exception as e:
+                logger.error(f"Error creating ROI from {key}: {e}")
+                return None
+        logger.error(f"Unsupported ROI format for {key}: {type(roi_val)}")
+        return None
     
     def get_coordinate(self, key: str) -> Optional[Coordinate]:
         """
@@ -521,6 +665,19 @@ class ConfigManager:
             key: Configuration key for ROI
             roi: ROI object
         """
+        # Preserve explicitly set modes. Only apply heuristics when mode is missing/unknown.
+        try:
+            mode = (roi.mode or 'absolute').lower()
+            if mode not in ('absolute', 'relative', 'percent'):
+                # Heuristic fallback for legacy pickers with no mode info
+                from ..detection.capture import CaptureService  # type: ignore
+                cs = CaptureService()
+                bbox = cs.get_window_bbox()
+                looks_relative = (roi.left < bbox['width'] and roi.top < bbox['height'] and roi.width <= bbox['width'] and roi.height <= bbox['height'])
+                if looks_relative:
+                    roi = ROI(left=bbox['left'] + int(roi.left), top=bbox['top'] + int(roi.top), width=int(roi.width), height=int(roi.height), mode='absolute')
+        except Exception:
+            pass
         self.set(key, roi.to_dict())
     
     def set_coordinate(self, key: str, coordinate: Coordinate) -> None:
@@ -569,9 +726,102 @@ class ConfigManager:
             
             # Validate and merge with defaults
             self._config = {**self._get_default_config(), **config_data}
+
+            # Deprecation guard: remove legacy tile_search_roi if present
+            try:
+                if 'tile_search_roi' in self._config:
+                    if self._config.get('tile_search_roi'):
+                        logger.warning("Deprecated config key 'tile_search_roi' found in profile and will be ignored. Use only 'search_roi'.")
+                    # Purge key to avoid accidental downstream usage
+                    self._config.pop('tile_search_roi', None)
+            except Exception:
+                pass
+
+            # ROI migration: ensure hpbar_roi & search_roi stored as ROI dicts (preserve mode when present)
+            for _rk in ('hpbar_roi', 'search_roi'):
+                try:
+                    rv = self._config.get(_rk)
+                    if rv and isinstance(rv, dict) and all(k in rv for k in ('left','top','width','height')):
+                        # Preserve explicit mode, default to 'absolute'
+                        mode = str(rv.get('mode', 'absolute')).lower()
+                        try:
+                            if mode == 'percent':
+                                l = float(rv.get('left', 0.0)); t = float(rv.get('top', 0.0)); w = float(rv.get('width', 0.0)); h = float(rv.get('height', 0.0))
+                                self._config[_rk] = ROI(l, t, w, h, mode='percent').to_dict()
+                            else:
+                                l = int(rv.get('left', 0)); t = int(rv.get('top', 0)); w = int(rv.get('width', 0)); h = int(rv.get('height', 0))
+                                if w > 0 and h > 0:
+                                    self._config[_rk] = ROI(l, t, w, h, mode=mode if mode in ('absolute','relative') else 'absolute').to_dict()
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+            # Optional auto-migration: if follow-window is enabled and hpbar ROI is absolute, convert to relative using current window bbox
+            try:
+                if bool(self._config.get('hpbar_roi_follow_window', False)):
+                    rv = self._config.get('hpbar_roi')
+                    if rv and isinstance(rv, dict) and str(rv.get('mode', 'absolute')).lower() == 'absolute':
+                        from ..detection.capture import CaptureService  # type: ignore
+                        cs = CaptureService()
+                        bbox = cs.get_window_bbox()
+                        l = int(rv.get('left', 0)) - int(bbox['left'])
+                        t = int(rv.get('top', 0)) - int(bbox['top'])
+                        w = int(rv.get('width', 0))
+                        h = int(rv.get('height', 0))
+                        if 0 <= l <= bbox['width'] and 0 <= t <= bbox['height']:
+                            self._config['hpbar_roi'] = ROI(l, t, w, h, mode='relative').to_dict()
+            except Exception:
+                pass
             self.current_profile = profile_name
             
             logger.info(f"Profile loaded: {profile_name}")
+            # Enforce standard HP bar ROI across existing profiles
+            try:
+                fixed_hp = ROI(25, 79, 100, 17, mode='relative').to_dict()
+                self._config['hpbar_roi'] = fixed_hp
+                self._config['hpbar_roi_follow_window'] = True
+                # Persist immediately to keep profiles aligned
+                try:
+                    self.save_profile(profile_name)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Enforce standard SEARCH ROI across existing profiles
+            try:
+                fixed_search = ROI(6, 28, 515, 338, mode='relative').to_dict()
+                self._config['search_roi'] = fixed_search
+                # Persist immediately to keep profiles aligned
+                try:
+                    self.save_profile(profile_name)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Enforce default Tile and HP bar colors across existing profiles
+            try:
+                self._config['tile_color'] = asdict(ColorSpec((250, 0, 255), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60))
+                self._config['hpbar_color'] = asdict(ColorSpec((179, 36, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60))
+                try:
+                    self.save_profile(profile_name)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Enforce chat watcher requested defaults across existing profiles
+            try:
+                self._config['chat_roi'] = ROI(5, 367, 510, 118, mode='relative').to_dict()
+                self._config['chat_prayer_enable_xy'] = {"x": 747, "y": 99}
+                self._config['chat_ybr_tile_color'] = asdict(ColorSpec((255, 212, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60))
+                self._config['chat_text_color_prayer_disabled'] = asdict(ColorSpec((255, 0, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60))
+                self._config['chat_text_color_ybr'] = asdict(ColorSpec((0, 0, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60))
+                self._config['chat_text_color_rebirth_disabled'] = asdict(ColorSpec((0, 0, 0), tol_rgb=30, tol_h=12, tol_s=60, tol_v=60))
+                try:
+                    self.save_profile(profile_name)
+                except Exception:
+                    pass
+            except Exception:
+                pass
             return True
         except Exception as e:
             logger.error(f"Error loading profile {profile_name}: {e}")
@@ -594,8 +844,28 @@ class ConfigManager:
         profile_path = os.path.join(self.config_dir, profile_name)
         
         try:
+            # Prepare a JSON-serializable copy of the config (handle ROI, ColorSpec, tuples, etc.)
+            def _to_jsonable(obj: Any) -> Any:
+                try:
+                    if isinstance(obj, ROI):
+                        return obj.to_dict()
+                except Exception:
+                    pass
+                try:
+                    if isinstance(obj, ColorSpec):
+                        return asdict(obj)
+                except Exception:
+                    pass
+                if isinstance(obj, dict):
+                    return {k: _to_jsonable(v) for k, v in obj.items()}
+                if isinstance(obj, (list, tuple)):
+                    return [_to_jsonable(v) for v in obj]
+                # Basic types pass through
+                return obj
+
+            serializable_config = _to_jsonable(self._config)
             with open(profile_path, 'w') as f:
-                json.dump(self._config, f, indent=2)
+                json.dump(serializable_config, f, indent=2)
             
             self.current_profile = profile_name
             logger.info(f"Profile saved: {profile_name}")

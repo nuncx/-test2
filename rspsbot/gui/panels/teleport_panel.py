@@ -82,9 +82,17 @@ class CoordinateSelector(QWidget):
         """Handle select button click using zoomable picker"""
         try:
             dialog = ZoomPointPickerDialog(self._config, self)
-            if dialog.exec_() == dialog.Accepted and dialog.selected_point:
-                x, y = dialog.selected_point
-                self.set_coordinate(x, y)
+            if dialog.exec_() == dialog.Accepted:
+                # Prefer window-relative coordinate to avoid drift when the window moves
+                rel = getattr(dialog, 'selected_point_relative', None)
+                if rel is not None:
+                    rx, ry = rel
+                    self.set_coordinate(int(rx), int(ry))
+                else:
+                    abspt = getattr(dialog, 'selected_point', None)
+                    if abspt is not None:
+                        x, y = abspt
+                        self.set_coordinate(int(x), int(y))
         except Exception as e:
             logger.error(f"Coordinate select error: {e}")
 
@@ -96,18 +104,31 @@ class CoordinateSelector(QWidget):
             QMessageBox.warning(self, "Test Click", "Please select a coordinate first.")
             return
         try:
+            # Interpret stored XY as window-relative when possible; convert to absolute for clicking
+            abs_x, abs_y = int(x), int(y)
+            try:
+                from ...core.detection.capture import CaptureService
+                cs = CaptureService()
+                bbox = cs.get_window_bbox()
+                # If within window bounds, treat as relative; else assume legacy absolute
+                if 0 <= int(x) <= int(bbox.get('width', 0)) and 0 <= int(y) <= int(bbox.get('height', 0)):
+                    abs_x = int(bbox.get('left', 0)) + int(x)
+                    abs_y = int(bbox.get('top', 0)) + int(y)
+            except Exception:
+                pass
             controller = self._controller
             if controller and getattr(controller, 'action_manager', None):
                 mc = controller.action_manager.mouse_controller
                 if mc:
-                    ok = mc.move_and_click(x, y)
+                    # Bypass Search ROI clamping/anti-overclick for absolute teleport test clicks
+                    ok = mc.move_and_click(abs_x, abs_y, enforce_guard=False, clamp_to_search_roi=False)
                     if not ok:
                         logger.warning("MouseController click failed")
                     return
             # Fallback: use pyautogui directly
             try:
                 import pyautogui
-                pyautogui.moveTo(x, y, duration=0.1)
+                pyautogui.moveTo(abs_x, abs_y, duration=0.1)
                 pyautogui.click()
             except Exception as e:
                 logger.error(f"Fallback click error: {e}")
@@ -360,11 +381,16 @@ class TeleportPanel(QWidget):
         self.locations_table = QTableWidget()
         self.locations_table.setColumnCount(5)
         self.locations_table.setHorizontalHeaderLabels(["Name", "Type", "Value", "Cooldown", "Emergency"])
-        self.locations_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.locations_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.locations_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.locations_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.locations_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        try:
+            header = self.locations_table.horizontalHeader()
+            if header and hasattr(header, 'setSectionResizeMode'):
+                header.setSectionResizeMode(0, QHeaderView.Stretch)
+                header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(2, QHeaderView.Stretch)
+                header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        except Exception:
+            pass
         self.locations_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.locations_table.setSelectionMode(QTableWidget.SingleSelection)
         self.locations_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -484,7 +510,7 @@ class TeleportPanel(QWidget):
     def on_add_clicked(self):
         """Handle add button click"""
         dialog = TeleportLocationDialog(self)
-        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.setModal(True)
         dialog.show()
         
         # Wait for dialog to close
@@ -541,7 +567,7 @@ class TeleportPanel(QWidget):
         
         # Open dialog
         dialog = TeleportLocationDialog(self, location)
-        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.setModal(True)
         dialog.show()
         
         # Wait for dialog to close
@@ -586,7 +612,8 @@ class TeleportPanel(QWidget):
             return
         
         # Get location name
-        name = self.locations_table.item(row, 0).text()
+        item = self.locations_table.item(row, 0)
+        name = item.text() if item is not None else ""
         
         # Confirm removal
         reply = QMessageBox.question(
@@ -620,7 +647,8 @@ class TeleportPanel(QWidget):
             return
         
         # Get location name
-        name = self.locations_table.item(row, 0).text()
+        item = self.locations_table.item(row, 0)
+        name = item.text() if item is not None else ""
         
         QMessageBox.information(
             self,
@@ -638,7 +666,8 @@ class TeleportPanel(QWidget):
         if manager is None:
             QMessageBox.warning(self, "Unavailable", "Teleport manager is not available.")
             return
-        name = self.locations_table.item(row, 0).text()
+        item = self.locations_table.item(row, 0)
+        name = item.text() if item is not None else ""
         ok = manager.teleport_to(name)
         if not ok:
             remaining = 0.0

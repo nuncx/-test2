@@ -35,7 +35,8 @@ class InstanceOnlyDetector:
         self.capture_service = capture_service
         
         # State tracking
-        self.last_hp_seen_time = 0
+        # Initialize to now so "seconds since combat" starts at ~0 on boot
+        self.last_hp_seen_time = time.time()
         self.in_combat = False
         
         logger.info("Instance-Only Mode detector initialized")
@@ -59,7 +60,10 @@ class InstanceOnlyDetector:
             self.last_hp_seen_time = time.time()
         else:
             # Only consider not in combat if HP bar has been invisible for a while
-            hp_timeout = self.config_manager.get('instance_hp_timeout', 30.0)
+            hp_timeout = float(self.config_manager.get('instance_hp_timeout', self.config_manager.get('instance_hp_timeout_s', 30.0)))
+            # If uninitialized or too old, set a baseline to avoid absurd large values
+            if self.last_hp_seen_time <= 0:
+                self.last_hp_seen_time = time.time()
             if time.time() - self.last_hp_seen_time > hp_timeout:
                 self.in_combat = False
         
@@ -72,7 +76,7 @@ class InstanceOnlyDetector:
             'in_combat': self.in_combat,
             'hp_seen': hp_bar_visible,
             'last_hp_seen_time': self.last_hp_seen_time,
-            'hp_timeout': self.config_manager.get('instance_hp_timeout', 30.0),
+            'hp_timeout': self.config_manager.get('instance_hp_timeout', self.config_manager.get('instance_hp_timeout_s', 30.0)),
             'instance_empty': not self.in_combat,
             'timestamp': time.time(),
             'detection_time_ms': detection_time_ms
@@ -87,16 +91,16 @@ class InstanceOnlyDetector:
         Returns:
             bool: True if HP bar is visible, False otherwise
         """
-        # Get HP bar ROI
-        hp_bar_roi = self.config_manager.get_roi('instance_hp_bar_roi')
+        # Always use the global HP bar ROI to keep behavior consistent across modes
+        hp_bar_roi = self.config_manager.get_roi('hpbar_roi')
         if not hp_bar_roi:
-            logger.warning("HP bar ROI not configured for Instance-Only Mode")
+            logger.warning("Global HP bar ROI ('hpbar_roi') not configured")
             return False
         
-        # Get HP bar color
-        hp_bar_color = self.config_manager.get_color_spec('instance_hp_bar_color')
+        # Always use the global HP bar color
+        hp_bar_color = self.config_manager.get_color_spec('hpbar_color')
         if not hp_bar_color:
-            logger.warning("HP bar color not configured for Instance-Only Mode")
+            logger.warning("Global HP bar color ('hpbar_color') not configured")
             return False
         
         # Capture HP bar region
@@ -200,8 +204,8 @@ class InstanceOnlyDetector:
             contours, _ = _cv.findContours(combo, _cv.RETR_EXTERNAL, _cv.CHAIN_APPROX_SIMPLE)
             if not contours:
                 # Fallback: click center of ROI
-                cx = aggro_roi.left + aggro_roi.width // 2
-                cy = aggro_roi.top + aggro_roi.height // 2
+                cx = int(aggro_roi.left + aggro_roi.width // 2)
+                cy = int(aggro_roi.top + aggro_roi.height // 2)
                 return True, (cx, cy)
 
             cnt = largest_contour(list(contours)) or list(contours)[0]
@@ -215,8 +219,8 @@ class InstanceOnlyDetector:
                 cy_small = y + h // 2
 
             # Convert to absolute screen coords (step=1)
-            cx = aggro_roi.left + cx_small
-            cy = aggro_roi.top + cy_small
+            cx = int(aggro_roi.left + cx_small)
+            cy = int(aggro_roi.top + cy_small)
             return True, (cx, cy)
         except Exception as e:
             logger.error(f"Error detecting aggro: {e}")
