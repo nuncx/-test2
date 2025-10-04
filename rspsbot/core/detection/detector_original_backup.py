@@ -1,14 +1,5 @@
 """
-Detection engine for RSPS Color Bot v3 - IMPROVED VERSION
-
-This version includes:
-- Fixed frame slicing bugs
-- Proper bounds checking
-- Optimized distance calculations
-- Frame validation
-- Better error handling
-- Thread safety improvements
-- Performance optimizations
+Detection engine for RSPS Color Bot v3
 """
 import time
 import logging
@@ -25,16 +16,11 @@ from .color_detector import closest_contour_to_point, largest_contour, random_co
 # Get module logger
 logger = logging.getLogger('rspsbot.core.detection.detector')
 
-
 class DetectionEngine:
     """
     Central detection engine that coordinates detection of tiles, monsters, and combat status
     
-    IMPROVEMENTS:
-    - Added frame validation
-    - Better cache management
-    - Improved error handling
-    - Thread-safe statistics
+    This class uses optimizations like regional processing and caching to improve performance.
     """
     
     def __init__(self, config_manager: ConfigManager, capture_service: CaptureService):
@@ -60,245 +46,114 @@ class DetectionEngine:
         self._last_detection_time = 0
         self._last_detection_result = None
         
-        # Detection statistics (thread-safe)
-        self._stats_lock = threading.RLock()
+        # Detection statistics
         self._stats = {
             'tile_detections': 0,
             'monster_detections': 0,
             'combat_detections': 0,
             'detection_time_ms': 0,
-            'detection_count': 0,
-            'failed_detections': 0,
-            'invalid_frames': 0
+            'detection_count': 0
         }
         
-        logger.info("Detection engine initialized (improved version)")
+        logger.info("Detection engine initialized")
     
     def detect_cycle(self) -> Dict[str, Any]:
         """
         Perform a full detection cycle: ROI > Tiles > Monsters > Combat
         
-        IMPROVEMENTS:
-        - Added frame validation
-        - Better error handling
-        - Optimized cache access
-        
         Returns:
             Dictionary with detection results
         """
+        # Check cache for recent results
         current_time = time.time()
-        
-        # Check cache for recent results (optimized)
         cache_ttl = self.config_manager.get('detection_cache_ttl', 0.1)
         
-        with self._cache_lock:
-            if (self._last_detection_result is not None and 
-                current_time - self._last_detection_time < cache_ttl):
-                # Return shallow copy (faster than deep copy)
-                return dict(self._last_detection_result)
+        if current_time - self._last_detection_time < cache_ttl:
+            return self._last_detection_result.copy()
         
         # Start timing
         start_time = time.time()
         
-        try:
-            # Get active ROI
-            roi = self.roi_manager.get_active_roi()
-            
-            # Validate ROI
-            if not self._validate_roi(roi):
-                logger.error(f"Invalid ROI: {roi}")
-                return self._create_empty_result(current_time, roi)
-            
-            # Early combat check: if configured, skip tile/monster detection while in combat
-            in_combat_init = self.combat_detector.is_in_combat()
-            hp_seen_init = getattr(self.combat_detector, 'last_hp_seen', False)
-            
-            if in_combat_init and self.config_manager.get('skip_detection_when_in_combat', True):
-                detection_time_ms = (time.time() - start_time) * 1000
-                result = {
-                    'tiles': [],
-                    'monsters': [],
-                    'in_combat': True,
-                    'hp_seen': hp_seen_init,
-                    'monsters_by_tile': [],
-                    'timestamp': current_time,
-                    'detection_time_ms': detection_time_ms,
-                    'roi': roi
-                }
-                
-                with self._cache_lock:
-                    self._last_detection_result = result
-                    self._last_detection_time = current_time
-                
-                return result
-            
-            # Capture frame for detection
-            frame = self.capture_service.capture_region(roi)
-            
-            # Validate frame
-            if not self._validate_frame(frame, roi):
-                logger.warning("Invalid or black frame detected")
-                with self._stats_lock:
-                    self._stats['invalid_frames'] += 1
-                return self._create_empty_result(current_time, roi)
-            
-            # Detect tiles within SEARCH ROI only
-            tiles = self.tile_detector.detect_tiles(frame, roi)
-            with self._stats_lock:
-                self._stats['tile_detections'] += 1
-            
-            # If no tiles found, try adaptive search
-            if not tiles and self.config_manager.get('adaptive_search', True):
-                tiles = self.tile_detector.detect_tiles_adaptive(frame, roi)
-            
-            # Detect monsters near each tile
-            monsters = []
-            monsters_by_tile: List[Tuple[Tuple[int, int], int]] = []
-            
-            for tile in tiles:
-                tile_monsters = self.monster_detector.detect_monsters_near_tile(frame, roi, tile)
-                monsters.extend(tile_monsters)
-                monsters_by_tile.append((tile, len(tile_monsters)))
-            
-            with self._stats_lock:
-                self._stats['monster_detections'] += 1
-            
-            # Check combat status
-            in_combat = self.combat_detector.is_in_combat()
-            hp_seen = getattr(self.combat_detector, 'last_hp_seen', False)
-            
-            with self._stats_lock:
-                self._stats['combat_detections'] += 1
-            
-            # Calculate detection time
+        # Get active ROI
+        roi = self.roi_manager.get_active_roi()
+        
+        # Early combat check: if configured, skip tile/monster detection while in combat
+        in_combat_init = self.combat_detector.is_in_combat()
+        hp_seen_init = getattr(self.combat_detector, 'last_hp_seen', False)
+        if in_combat_init and self.config_manager.get('skip_detection_when_in_combat', True):
             detection_time_ms = (time.time() - start_time) * 1000
-            
-            with self._stats_lock:
-                self._stats['detection_time_ms'] += detection_time_ms
-                self._stats['detection_count'] += 1
-            
-            # Create result
             result = {
-                'tiles': tiles,
-                'monsters': monsters,
-                'in_combat': in_combat,
-                'hp_seen': hp_seen,
-                'monsters_by_tile': monsters_by_tile,
+                'tiles': [],
+                'monsters': [],
+                'in_combat': True,
+                'hp_seen': hp_seen_init,
+                'monsters_by_tile': [],
                 'timestamp': current_time,
                 'detection_time_ms': detection_time_ms,
                 'roi': roi
             }
-            
-            # Cache result
-            with self._cache_lock:
-                self._last_detection_result = result
-                self._last_detection_time = current_time
-            
-            # Log detection stats periodically
-            with self._stats_lock:
-                if self._stats['detection_count'] % 100 == 0:
-                    avg_time = self._stats['detection_time_ms'] / max(1, self._stats['detection_count'])
-                    logger.debug(
-                        f"Detection stats: avg_time={avg_time:.1f}ms, "
-                        f"tiles={self._stats['tile_detections']}, "
-                        f"monsters={self._stats['monster_detections']}, "
-                        f"failed={self._stats['failed_detections']}, "
-                        f"invalid_frames={self._stats['invalid_frames']}"
-                    )
-            
+            self._last_detection_result = result.copy()
+            self._last_detection_time = current_time
             return result
         
-        except Exception as e:
-            logger.error(f"Error in detection cycle: {e}", exc_info=True)
-            with self._stats_lock:
-                self._stats['failed_detections'] += 1
-            return self._create_empty_result(current_time, roi if 'roi' in locals() else None)
-    
-    def _validate_roi(self, roi: Dict[str, int]) -> bool:
-        """
-        Validate ROI parameters
+        # Capture frame for detection
+        frame = self.capture_service.capture_region(roi)
         
-        Args:
-            roi: ROI dictionary
+    # Detect tiles within SEARCH ROI only
+        tiles = self.tile_detector.detect_tiles(frame, roi)
+        self._stats['tile_detections'] += 1
         
-        Returns:
-            True if valid, False otherwise
-        """
-        if not roi:
-            return False
+        # If no tiles found, try adaptive search
+        if not tiles and self.config_manager.get('adaptive_search', True):
+            tiles = self.tile_detector.detect_tiles_adaptive(frame, roi)
         
-        required_keys = ['left', 'top', 'width', 'height']
-        if not all(key in roi for key in required_keys):
-            return False
+    # Detect monsters near each tile (still within SEARCH ROI via local ROI windows)
+        monsters = []
+        monsters_by_tile: List[Tuple[Tuple[int, int], int]] = []
+        for tile in tiles:
+            tile_monsters = self.monster_detector.detect_monsters_near_tile(frame, roi, tile)
+            monsters.extend(tile_monsters)
+            monsters_by_tile.append((tile, len(tile_monsters)))
         
-        if roi['width'] <= 0 or roi['height'] <= 0:
-            return False
+        self._stats['monster_detections'] += 1
         
-        # Check for reasonable bounds (not too large)
-        if roi['width'] > 10000 or roi['height'] > 10000:
-            logger.warning(f"ROI dimensions unusually large: {roi['width']}x{roi['height']}")
-            return False
+        # Check combat status
+        # Determine combat state; CombatDetector captures HP ROI internally
+        in_combat = self.combat_detector.is_in_combat()
+        hp_seen = getattr(self.combat_detector, 'last_hp_seen', False)
+        self._stats['combat_detections'] += 1
         
-        return True
-    
-    def _validate_frame(self, frame: np.ndarray, roi: Dict[str, int]) -> bool:
-        """
-        Validate captured frame
+        # Calculate detection time
+        detection_time_ms = (time.time() - start_time) * 1000
+        self._stats['detection_time_ms'] += detection_time_ms
+        self._stats['detection_count'] += 1
         
-        Args:
-            frame: Captured frame
-            roi: ROI used for capture
-        
-        Returns:
-            True if valid, False otherwise
-        """
-        if frame is None or frame.size == 0:
-            return False
-        
-        # Check dimensions match ROI
-        if frame.shape[0] != roi['height'] or frame.shape[1] != roi['width']:
-            logger.warning(
-                f"Frame dimensions {frame.shape[:2]} don't match ROI "
-                f"{roi['height']}x{roi['width']}"
-            )
-            return False
-        
-        # Check if frame is not completely black (display might be off)
-        mean_val = frame.mean()
-        std_val = frame.std()
-        
-        if mean_val < 1.0 and std_val < 1.0:
-            logger.warning("Frame appears to be black (display might be off)")
-            return False
-        
-        return True
-    
-    def _create_empty_result(self, timestamp: float, roi: Optional[Dict[str, int]]) -> Dict[str, Any]:
-        """
-        Create an empty detection result
-        
-        Args:
-            timestamp: Current timestamp
-            roi: ROI dictionary or None
-        
-        Returns:
-            Empty result dictionary
-        """
-        return {
-            'tiles': [],
-            'monsters': [],
-            'in_combat': False,
-            'hp_seen': False,
-            'monsters_by_tile': [],
-            'timestamp': timestamp,
-            'detection_time_ms': 0,
-            'roi': roi or {'left': 0, 'top': 0, 'width': 0, 'height': 0}
+        # Create result
+        result = {
+            'tiles': tiles,
+            'monsters': monsters,
+            'in_combat': in_combat,
+            'hp_seen': hp_seen,
+            'monsters_by_tile': monsters_by_tile,
+            'timestamp': current_time,
+            'detection_time_ms': detection_time_ms,
+            'roi': roi
         }
+        
+        # Cache result
+        self._last_detection_result = result.copy()
+        self._last_detection_time = current_time
+        
+        # Log detection stats periodically
+        if self._stats['detection_count'] % 100 == 0:
+            avg_time = self._stats['detection_time_ms'] / max(1, self._stats['detection_count'])
+            logger.debug(f"Detection stats: avg_time={avg_time:.1f}ms, tiles={self._stats['tile_detections']}, monsters={self._stats['monster_detections']}")
+        
+        return result
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get detection statistics (thread-safe)"""
-        with self._stats_lock:
-            stats = self._stats.copy()
+        """Get detection statistics"""
+        stats = self._stats.copy()
         
         # Calculate averages
         if stats['detection_count'] > 0:
@@ -309,31 +164,24 @@ class DetectionEngine:
         return stats
     
     def reset_stats(self):
-        """Reset detection statistics (thread-safe)"""
-        with self._stats_lock:
-            self._stats = {
-                'tile_detections': 0,
-                'monster_detections': 0,
-                'combat_detections': 0,
-                'detection_time_ms': 0,
-                'detection_count': 0,
-                'failed_detections': 0,
-                'invalid_frames': 0
-            }
+        """Reset detection statistics"""
+        self._stats = {
+            'tile_detections': 0,
+            'monster_detections': 0,
+            'combat_detections': 0,
+            'detection_time_ms': 0,
+            'detection_count': 0
+        }
     
     def clear_cache(self):
-        """Clear detection cache (thread-safe)"""
-        with self._cache_lock:
-            self._last_detection_time = 0
-            self._last_detection_result = None
+        """Clear detection cache"""
+        self._last_detection_time = 0
+        self._last_detection_result = None
         self.capture_service.clear_cache()
-
 
 class ROIManager:
     """
     Manages regions of interest for detection
-    
-    No changes needed - already well implemented
     """
     
     def __init__(self, config_manager: ConfigManager, capture_service: CaptureService):
@@ -342,7 +190,6 @@ class ROIManager:
         
         Args:
             config_manager: Configuration manager
-            capture_service: Capture service
         """
         self.config_manager = config_manager
         self.capture_service = capture_service
@@ -369,8 +216,7 @@ class ROIManager:
                 'width': int(bbox['width']),
                 'height': int(bbox['height'])
             }
-        except Exception as e:
-            logger.warning(f"Error getting window bbox: {e}")
+        except Exception:
             # Last resort safe default
             return {
                 'left': 0,
@@ -412,15 +258,9 @@ class ROIManager:
         
         return base_bbox
 
-
 class TileDetector:
     """
     Detects tiles in the game
-    
-    IMPROVEMENTS:
-    - Better error handling
-    - Progressive refinement in adaptive mode
-    - Input validation
     """
     
     def __init__(self, config_manager: ConfigManager):
@@ -436,11 +276,6 @@ class TileDetector:
         """
         Detect tiles in a frame
         
-        IMPROVEMENTS:
-        - Added input validation
-        - Better error handling
-        - Optimized fallback logic
-        
         Args:
             frame: Input frame
             roi: Region of interest
@@ -448,11 +283,6 @@ class TileDetector:
         Returns:
             List of tile center points (x, y)
         """
-        # Input validation
-        if frame is None or frame.size == 0:
-            logger.warning("Invalid frame provided to detect_tiles")
-            return []
-        
         # Check if tile detection is enabled
         if not self.config_manager.get('detect_tiles', True):
             return []
@@ -463,9 +293,9 @@ class TileDetector:
             logger.warning("Tile color not configured")
             return []
         
-        search_step = max(1, int(self.config_manager.get('search_step', 2)))
+        search_step = self.config_manager.get('search_step', 2)
         use_precise = self.config_manager.get('use_precise_mode', True)
-        tile_min_area = max(1, int(self.config_manager.get('tile_min_area', 30)))
+        tile_min_area = self.config_manager.get('tile_min_area', 30)
         
         try:
             # Build mask and find contours
@@ -482,37 +312,30 @@ class TileDetector:
             
             if points:
                 logger.debug(f"Detected {len(points)} tiles (step={search_step}, precise={use_precise})")
-                return points
+            else:
+                # Try a quick precise fallback at step=1 if nothing found
+                if search_step > 1:
+                    _, cnt2 = build_mask(
+                        frame,
+                        tile_color,
+                        1,
+                        True,
+                        max(5, int(tile_min_area * 0.7))
+                    )
+                    points2 = contours_to_screen_points(cnt2, roi, 1)
+                    if points2:
+                        logger.debug("Fallback tile detection hit (step=1 precise)")
+                        return points2
             
-            # Try a quick precise fallback at step=1 if nothing found
-            if search_step > 1:
-                logger.debug("No tiles found, trying fallback with step=1")
-                _, cnt2 = build_mask(
-                    frame,
-                    tile_color,
-                    1,
-                    True,
-                    max(5, int(tile_min_area * 0.7))
-                )
-                points2 = contours_to_screen_points(cnt2, roi, 1)
-                if points2:
-                    logger.debug(f"Fallback tile detection found {len(points2)} tiles")
-                    return points2
-            
-            return []
+            return points
         
         except Exception as e:
-            logger.error(f"Error detecting tiles: {e}", exc_info=True)
+            logger.error(f"Error detecting tiles: {e}")
             return []
     
     def detect_tiles_adaptive(self, frame: np.ndarray, roi: Dict[str, int]) -> List[Tuple[int, int]]:
         """
         Detect tiles with adaptive parameters for difficult cases
-        
-        IMPROVEMENTS:
-        - Progressive refinement (try step=2 first, then step=1)
-        - Better tolerance calculation
-        - Input validation
         
         Args:
             frame: Input frame
@@ -521,67 +344,52 @@ class TileDetector:
         Returns:
             List of tile center points (x, y)
         """
-        # Input validation
-        if frame is None or frame.size == 0:
-            logger.warning("Invalid frame provided to detect_tiles_adaptive")
-            return []
-        
         # Get tile color
         tile_color_dict = self.config_manager.get('tile_color')
         if not tile_color_dict:
             logger.warning("Tile color not configured")
             return []
         
+        # Create a more tolerant color spec
         try:
-            # Create a more tolerant color spec
-            base_tol_rgb = int(tile_color_dict.get('tol_rgb', 8))
-            base_tol_h = int(tile_color_dict.get('tol_h', 4))
-            base_tol_s = int(tile_color_dict.get('tol_s', 30))
-            base_tol_v = int(tile_color_dict.get('tol_v', 30))
-            
             tile_color = ColorSpec(
                 rgb=tuple(tile_color_dict['rgb']),
-                tol_rgb=min(60, base_tol_rgb + 12),
+                tol_rgb=min(60, int(tile_color_dict.get('tol_rgb', 8)) + 12),
                 use_hsv=tile_color_dict.get('use_hsv', True),
-                tol_h=min(30, base_tol_h + 6),
-                tol_s=min(120, base_tol_s + 25),
-                tol_v=min(120, base_tol_v + 25)
+                tol_h=min(30, int(tile_color_dict.get('tol_h', 4)) + 6),
+                tol_s=min(120, int(tile_color_dict.get('tol_s', 30)) + 25),
+                tol_v=min(120, int(tile_color_dict.get('tol_v', 30)) + 25)
             )
             
+            # Use step 1 for more precise detection
+            search_step = 1
+            use_precise = True
             tile_min_area = max(5, int(self.config_manager.get('tile_min_area', 30) * 0.7))
             
-            # Progressive refinement: try step=2 first (faster)
-            for search_step in [2, 1]:
-                _, contours = build_mask(
-                    frame,
-                    tile_color,
-                    search_step,
-                    True,
-                    tile_min_area
-                )
-                
-                points = contours_to_screen_points(contours, roi, search_step)
-                
-                if points:
-                    logger.debug(f"Adaptive detection found {len(points)} tiles (step={search_step})")
-                    return points
+            # Build mask and find contours
+            _, contours = build_mask(
+                frame,
+                tile_color,
+                search_step,
+                use_precise,
+                tile_min_area
+            )
             
-            return []
+            # Convert contours to screen points
+            points = contours_to_screen_points(contours, roi, search_step)
+            
+            if points:
+                logger.debug(f"Adaptive detection found {len(points)} tiles")
+            
+            return points
         
         except Exception as e:
-            logger.error(f"Error in adaptive tile detection: {e}", exc_info=True)
+            logger.error(f"Error in adaptive tile detection: {e}")
             return []
-
 
 class MonsterDetector:
     """
     Detects monsters in the game
-    
-    IMPROVEMENTS:
-    - Fixed frame slicing bug
-    - Proper bounds checking
-    - Optimized distance calculation
-    - Better error handling
     """
     
     def __init__(self, config_manager: ConfigManager):
@@ -602,12 +410,6 @@ class MonsterDetector:
         """
         Detect monsters near a tile
         
-        IMPROVEMENTS:
-        - Fixed frame slicing bug with proper bounds checking
-        - Optimized distance calculation (removed sqrt)
-        - Better input validation
-        - Improved error handling
-        
         Args:
             frame: Input frame
             base_roi: Base region of interest
@@ -616,15 +418,6 @@ class MonsterDetector:
         Returns:
             List of monster dictionaries with position and metadata
         """
-        # Input validation
-        if frame is None or frame.size == 0:
-            logger.warning("Invalid frame provided to detect_monsters_near_tile")
-            return []
-        
-        if not tile_center or len(tile_center) != 2:
-            logger.warning(f"Invalid tile_center: {tile_center}")
-            return []
-        
         # Check if monster detection is enabled
         if not self.config_manager.get('detect_monsters', True):
             return []
@@ -657,47 +450,16 @@ class MonsterDetector:
             logger.warning("No valid monster colors configured")
             return []
         
-        # FIXED: Proper frame slicing with bounds checking
-        try:
-            # Calculate slice coordinates relative to frame
-            slice_top = roi_bbox['top'] - base_roi['top']
-            slice_left = roi_bbox['left'] - base_roi['left']
-            slice_bottom = slice_top + roi_bbox['height']
-            slice_right = slice_left + roi_bbox['width']
-            
-            # Bounds checking
-            frame_height, frame_width = frame.shape[:2]
-            
-            if slice_top < 0 or slice_left < 0:
-                logger.warning(f"ROI slice has negative coordinates: top={slice_top}, left={slice_left}")
-                return []
-            
-            if slice_bottom > frame_height or slice_right > frame_width:
-                logger.warning(
-                    f"ROI slice exceeds frame bounds: "
-                    f"slice=({slice_top}:{slice_bottom}, {slice_left}:{slice_right}), "
-                    f"frame=({frame_height}, {frame_width})"
-                )
-                # Clamp to frame bounds
-                slice_bottom = min(slice_bottom, frame_height)
-                slice_right = min(slice_right, frame_width)
-            
-            # Extract ROI frame
-            roi_frame = frame[slice_top:slice_bottom, slice_left:slice_right]
-            
-            # Validate extracted frame
-            if roi_frame.size == 0:
-                logger.warning("Extracted ROI frame is empty")
-                return []
-        
-        except Exception as e:
-            logger.error(f"Error extracting ROI frame: {e}", exc_info=True)
-            return []
+        # Capture ROI
+        roi_frame = frame[
+            roi_bbox['top'] - base_roi['top']:roi_bbox['top'] - base_roi['top'] + roi_bbox['height'],
+            roi_bbox['left'] - base_roi['left']:roi_bbox['left'] - base_roi['left'] + roi_bbox['width']
+        ]
         
         # Detection parameters
-        step = max(1, int(self.config_manager.get('monster_scan_step', 1)))
+        step = max(1, self.config_manager.get('monster_scan_step', 1))
         use_precise = self.config_manager.get('use_precise_mode', True)
-        monster_min_area = max(1, int(self.config_manager.get('monster_min_area', 15)))
+        monster_min_area = self.config_manager.get('monster_min_area', 15)
         
         # Get additional config for advanced detection
         config_dict = {
@@ -747,32 +509,18 @@ class MonsterDetector:
                 screen_x = roi_bbox['left'] + cx_small * step
                 screen_y = roi_bbox['top'] + cy_small * step
                 
-                # Validate screen coordinates
-                if screen_x < 0 or screen_y < 0:
-                    logger.warning(f"Invalid screen coordinates: ({screen_x}, {screen_y})")
-                    continue
-                
                 # Calculate area and size
                 area = cv2.contourArea(cnt)
                 x, y, w, h = cv2.boundingRect(cnt)
                 
-                # FIXED: Only multiply area by step² if step > 1
-                actual_area = area * (step * step) if step > 1 else area
-                
-                # OPTIMIZED: Calculate squared distance (no sqrt needed)
-                dx = screen_x - tile_center[0]
-                dy = screen_y - tile_center[1]
-                distance_squared = dx * dx + dy * dy
-                
                 # Create monster object
                 monster = {
                     'position': (screen_x, screen_y),
-                    'area': actual_area,
+                    'area': area * step * step,
                     'width': w * step,
                     'height': h * step,
                     'tile_center': tile_center,
-                    'distance_squared': distance_squared,  # Store squared distance
-                    'distance': distance_squared ** 0.5  # Keep original for compatibility
+                    'distance': ((screen_x - tile_center[0]) ** 2 + (screen_y - tile_center[1]) ** 2) ** 0.5
                 }
                 
                 monsters.append(monster)
@@ -783,7 +531,7 @@ class MonsterDetector:
             return monsters
         
         except Exception as e:
-            logger.error(f"Error detecting monsters: {e}", exc_info=True)
+            logger.error(f"Error detecting monsters: {e}")
             return []
     
     def _create_detection_roi(
@@ -794,10 +542,6 @@ class MonsterDetector:
         """
         Create a region of interest around a center point
         
-        IMPROVEMENTS:
-        - Added input validation
-        - Better bounds checking
-        
         Args:
             center: Center point (x, y)
             base_roi: Base region of interest
@@ -805,33 +549,25 @@ class MonsterDetector:
         Returns:
             ROI dictionary
         """
-        if not center or len(center) != 2:
-            logger.warning(f"Invalid center point: {center}")
-            return {'left': 0, 'top': 0, 'width': 0, 'height': 0}
-        
         cx, cy = center
-        radius = max(10, int(self.config_manager.get('around_tile_radius', 120)))
+        radius = self.config_manager.get('around_tile_radius', 120)
         
         left = base_roi['left']
         top = base_roi['top']
         width = base_roi['width']
         height = base_roi['height']
         
-        # Calculate ROI bounds with proper clamping
+        # Calculate ROI bounds
         x0 = max(left, cx - radius)
         y0 = max(top, cy - radius)
         x1 = min(left + width, cx + radius)
         y1 = min(top + height, cy + radius)
         
-        # Ensure positive dimensions
-        roi_width = max(0, x1 - x0)
-        roi_height = max(0, y1 - y0)
-        
         return {
             'left': x0,
             'top': y0,
-            'width': roi_width,
-            'height': roi_height
+            'width': max(0, x1 - x0),
+            'height': max(0, y1 - y0)
         }
     
     def _adaptive_monster_detection(
@@ -843,10 +579,6 @@ class MonsterDetector:
         """
         Adaptive monster detection with more tolerant parameters
         
-        IMPROVEMENTS:
-        - Progressive refinement
-        - Better tolerance calculation
-        
         Args:
             frame: Input frame
             monster_colors: List of monster color specs
@@ -855,9 +587,6 @@ class MonsterDetector:
         Returns:
             List of contours
         """
-        if frame is None or frame.size == 0:
-            return []
-        
         # Create more tolerant color specs
         adaptive_colors = []
         
@@ -872,38 +601,29 @@ class MonsterDetector:
             )
             adaptive_colors.append(adaptive_spec)
         
+        # Use step 1 for more precise detection
+        step = 1
+        use_precise = True
         monster_min_area = max(5, int(self.config_manager.get('monster_min_area', 15) * 0.7))
         
-        # Progressive refinement: try step=2 first, then step=1
-        for step in [2, 1]:
-            try:
-                _, contours = build_mask_multi(
-                    frame,
-                    adaptive_colors,
-                    step,
-                    True,
-                    monster_min_area,
-                    config_dict
-                )
-                
-                if contours:
-                    logger.debug(f"Adaptive detection found {len(contours)} monsters (step={step})")
-                    return contours
-            
-            except Exception as e:
-                logger.error(f"Error in adaptive detection (step={step}): {e}")
-                continue
+        # Build mask and find contours
+        _, contours = build_mask_multi(
+            frame,
+            adaptive_colors,
+            step,
+            use_precise,
+            monster_min_area,
+            config_dict
+        )
         
-        return []
-
+        if contours:
+            logger.debug(f"Adaptive detection found {len(contours)} monsters")
+        
+        return contours
 
 class CombatDetector:
     """
     Detects combat status based on HP bar
-    
-    IMPROVEMENTS:
-    - Better error handling
-    - Input validation
     """
     
     def __init__(self, config_manager: ConfigManager, capture_service: CaptureService):
@@ -920,22 +640,15 @@ class CombatDetector:
         # Combat state tracking
         self.in_combat = False
         self.last_combat_time = 0.0
-        self.last_hp_seen = False
-        
         # Use configured timeout key with sensible fallback
         self.combat_timeout = float(
-            self.config_manager.get('combat_not_seen_timeout_s', 
-                                   self.config_manager.get('combat_timeout', 10.0))
+            self.config_manager.get('combat_not_seen_timeout_s', self.config_manager.get('combat_timeout', 10.0))
         )
         self.leave_immediately = bool(self.config_manager.get('combat_leave_immediately', True))
     
     def is_in_combat(self) -> bool:
         """
         Detect if player is in combat based on HP bar
-        
-        IMPROVEMENTS:
-        - Better error handling
-        - Input validation
         
         Returns:
             True if in combat, False otherwise
@@ -976,10 +689,6 @@ class CombatDetector:
         """
         Detect HP bar in the configured ROI using color thresholding
         
-        IMPROVEMENTS:
-        - Better error handling
-        - Input validation
-        
         Returns:
             True if HP bar detected, False otherwise
         """
@@ -989,19 +698,11 @@ class CombatDetector:
             if not color_spec:
                 logger.warning("HP bar color not configured")
                 return False
-            
-            min_area = max(1, int(self.config_manager.get('hpbar_min_area', 50)))
-            min_pixels = max(1, int(self.config_manager.get('hpbar_min_pixel_matches', 150)))
+            min_area = int(self.config_manager.get('hpbar_min_area', 50))
+            min_pixels = int(self.config_manager.get('hpbar_min_pixel_matches', 150))
             
             # Capture region
             frame = self.capture_service.capture_region(hp_roi)
-            
-            # Validate frame
-            if frame is None or frame.size == 0:
-                logger.warning("Invalid frame captured for HP bar detection")
-                return False
-            
-            # Build mask
             mask, contours = build_mask(frame, color_spec, step=1, precise=True, min_area=min_area)
             
             # Quick pixel threshold test
@@ -1012,7 +713,6 @@ class CombatDetector:
             # If any contour passes area threshold we consider it detected
             detected = len(contours) > 0
             return detected
-        
         except Exception as e:
-            logger.error(f"Error detecting HP bar: {e}", exc_info=True)
+            logger.error(f"Error detecting HP bar: {e}")
             return False
